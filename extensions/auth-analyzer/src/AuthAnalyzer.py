@@ -11,21 +11,27 @@ import sys
 import os
 import threading
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
-
-from AuthLogic import AuthLogic
-from burp_utils import get_logger
-from burp_shared import FindingReporter
-
-logger = get_logger("AuthAnalyzer")
-
 class BurpExtender(IBurpExtender, IHttpListener, ITab, IContextMenuFactory):
     def registerExtenderCallbacks(self, callbacks):
+        # Resolve paths without relying on __file__
+        extension_file = callbacks.getExtensionFilename()
+        base_dir = os.path.dirname(extension_file)
+        common_dir = os.path.join(base_dir, "../../../common/python")
+
+        if base_dir not in sys.path: sys.path.append(base_dir)
+        if common_dir not in sys.path: sys.path.append(common_dir)
+
+        # Deferred imports to ensure sys.path is ready
+        from AuthLogic import AuthLogic
+        from burp_utils import get_logger
+        from burp_shared import FindingReporter
+
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("Auth Bypass and Session Analyzer")
 
+        self._logger = get_logger("AuthAnalyzer")
+        self._reporter = FindingReporter.get()
         self.logic = AuthLogic()
 
         # Setup UI
@@ -36,7 +42,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IContextMenuFactory):
         callbacks.registerContextMenuFactory(self)
         callbacks.addSuiteTab(self)
 
-        logger.info("Auth Analyzer loaded.")
+        self._logger.info("Auth Analyzer loaded.")
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -144,7 +150,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IContextMenuFactory):
         all_findings = findings + jwt_findings
 
         for f in all_findings:
-            FindingReporter.get().report(f)
+            self._reporter.report(f)
 
         if not all_findings and entropy > 3.5:
             return
@@ -184,7 +190,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IContextMenuFactory):
             return
 
         def task():
-            logger.info("Running matrix check...")
+            self._logger.info("Running matrix check...")
             # In a real tool, we would replay the request with headers_a and headers_b
             # and compare the responses using self.logic.compare_responses
             self._callbacks.issueAlert("Matrix Check simulated: Check extension output for behavioral differences.")
@@ -216,7 +222,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IContextMenuFactory):
             SwingUtilities.invokeLater(update_results)
 
             if stats['predictability'] == "High":
-                FindingReporter.get().report({
+                self._reporter.report({
                     'name': 'Highly Predictable Tokens',
                     'severity': 'High',
                     'confidence': 'Firm',
@@ -250,5 +256,5 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab, IContextMenuFactory):
             for name, value in mutation.items():
                 # In a real extension, we might send this to Repeater
                 # For now, we'll log the suggested mutation
-                logger.info("Suggested IDOR mutation: {} = {}".format(name, value))
+                self._logger.info("Suggested IDOR mutation: {} = {}".format(name, value))
                 self._callbacks.issueAlert("IDOR Suggestion: {} -> {}".format(name, value))

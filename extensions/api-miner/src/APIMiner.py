@@ -7,21 +7,27 @@ from javax.swing.table import DefaultTableModel
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
-
-from APIMinerLogic import APIMinerLogic
-from burp_utils import get_logger
-from burp_shared import FindingReporter
-
-logger = get_logger("APIMiner")
-
 class BurpExtender(IBurpExtender, IHttpListener, ITab):
     def registerExtenderCallbacks(self, callbacks):
+        # Resolve paths without relying on __file__
+        extension_file = callbacks.getExtensionFilename()
+        base_dir = os.path.dirname(extension_file)
+        common_dir = os.path.join(base_dir, "../../../common/python")
+
+        if base_dir not in sys.path: sys.path.append(base_dir)
+        if common_dir not in sys.path: sys.path.append(common_dir)
+
+        # Deferred imports to ensure sys.path is ready
+        from APIMinerLogic import APIMinerLogic
+        from burp_utils import get_logger
+        from burp_shared import FindingReporter
+
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("API Documentation & Swagger Miner")
 
+        self._logger = get_logger("APIMiner")
+        self._reporter = FindingReporter.get()
         self.logic = APIMinerLogic()
         self.findings = []
 
@@ -32,7 +38,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         callbacks.registerHttpListener(self)
         callbacks.addSuiteTab(self)
 
-        logger.info("API Miner loaded.")
+        self._logger.info("API Miner loaded.")
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -70,7 +76,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         findings = self.logic.analyze_response(url, body)
 
         for f in findings:
-            FindingReporter.get().report(f)
+            self._reporter.report(f)
 
             endpoints = self.logic.extract_endpoints(body)
             row = [f['name'], url, str(len(endpoints))]

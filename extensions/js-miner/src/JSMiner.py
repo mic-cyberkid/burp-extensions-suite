@@ -7,21 +7,27 @@ from javax.swing.table import DefaultTableModel
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
-
-from JSMinerLogic import JSMinerLogic
-from burp_utils import get_logger
-from burp_shared import FindingReporter
-
-logger = get_logger("JSMiner")
-
 class BurpExtender(IBurpExtender, IHttpListener, ITab):
     def registerExtenderCallbacks(self, callbacks):
+        # Resolve paths without relying on __file__
+        extension_file = callbacks.getExtensionFilename()
+        base_dir = os.path.dirname(extension_file)
+        common_dir = os.path.join(base_dir, "../../../common/python")
+
+        if base_dir not in sys.path: sys.path.append(base_dir)
+        if common_dir not in sys.path: sys.path.append(common_dir)
+
+        # Deferred imports to ensure sys.path is ready
+        from JSMinerLogic import JSMinerLogic
+        from burp_utils import get_logger
+        from burp_shared import FindingReporter
+
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("JS Link & Secret Miner")
 
+        self._logger = get_logger("JSMiner")
+        self._reporter = FindingReporter.get()
         self.logic = JSMinerLogic()
         self.findings = []
 
@@ -32,7 +38,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         callbacks.registerHttpListener(self)
         callbacks.addSuiteTab(self)
 
-        logger.info("JS Miner loaded.")
+        self._logger.info("JS Miner loaded.")
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -72,7 +78,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         findings = self.logic.analyze_js(url, body)
 
         for f in findings:
-            FindingReporter.get().report(f)
+            self._reporter.report(f)
 
             row = [f['name'], url, f['description'][:100] + "..."]
             if row not in self.findings:

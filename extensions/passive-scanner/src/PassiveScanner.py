@@ -7,25 +7,27 @@ from javax.swing.table import DefaultTableModel
 import sys
 import os
 
-# Add the current directory and common directory to sys.path
-# This allows us to import ScannerLogic and shared utilities
-# In a real Burp environment, we might need to be careful with paths
-# For now, we assume the file is loaded from its directory
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
-
-from ScannerLogic import ScannerLogic
-from burp_utils import get_logger
-from burp_shared import FindingReporter
-
-logger = get_logger("PassiveScanner")
-
 class BurpExtender(IBurpExtender, IHttpListener, ITab):
     def registerExtenderCallbacks(self, callbacks):
+        # Resolve paths without relying on __file__
+        extension_file = callbacks.getExtensionFilename()
+        base_dir = os.path.dirname(extension_file)
+        common_dir = os.path.join(base_dir, "../../../common/python")
+
+        if base_dir not in sys.path: sys.path.append(base_dir)
+        if common_dir not in sys.path: sys.path.append(common_dir)
+
+        # Deferred imports to ensure sys.path is ready
+        from ScannerLogic import ScannerLogic
+        from burp_utils import get_logger
+        from burp_shared import FindingReporter
+
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("Passive Vulnerability Scanner")
 
+        self._logger = get_logger("PassiveScanner")
+        self._reporter = FindingReporter.get()
         self.logic = ScannerLogic()
         self.findings = []
 
@@ -38,7 +40,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         # Add the custom tab to Burp
         callbacks.addSuiteTab(self)
 
-        logger.info("Passive Vulnerability Scanner loaded successfully.")
+        self._logger.info("Passive Vulnerability Scanner loaded successfully.")
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -88,7 +90,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
 
         for finding in findings:
             # Report to shared reporter
-            FindingReporter.get().report(finding)
+            self._reporter.report(finding)
 
             # Avoid duplicate findings for the same URL and Issue
             finding_key = (url, finding['name'])

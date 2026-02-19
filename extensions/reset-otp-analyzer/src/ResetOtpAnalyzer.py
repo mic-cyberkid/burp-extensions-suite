@@ -7,21 +7,27 @@ from javax.swing.table import DefaultTableModel
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
-
-from ResetOtpLogic import ResetOtpLogic
-from burp_utils import get_logger
-from burp_shared import FindingReporter
-
-logger = get_logger("ResetOtpAnalyzer")
-
 class BurpExtender(IBurpExtender, IHttpListener, ITab):
     def registerExtenderCallbacks(self, callbacks):
+        # Resolve paths without relying on __file__
+        extension_file = callbacks.getExtensionFilename()
+        base_dir = os.path.dirname(extension_file)
+        common_dir = os.path.join(base_dir, "../../../common/python")
+
+        if base_dir not in sys.path: sys.path.append(base_dir)
+        if common_dir not in sys.path: sys.path.append(common_dir)
+
+        # Deferred imports to ensure sys.path is ready
+        from ResetOtpLogic import ResetOtpLogic
+        from burp_utils import get_logger
+        from burp_shared import FindingReporter
+
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("Reset/OTP Poisoning Analyzer")
 
+        self._logger = get_logger("ResetOtpAnalyzer")
+        self._reporter = FindingReporter.get()
         self.logic = ResetOtpLogic()
         self.findings = []
 
@@ -32,7 +38,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         callbacks.registerHttpListener(self)
         callbacks.addSuiteTab(self)
 
-        logger.info("Reset/OTP Analyzer loaded.")
+        self._logger.info("Reset/OTP Analyzer loaded.")
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -99,7 +105,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
 
         for f in findings:
             # Report to shared reporter
-            FindingReporter.get().report(f)
+            self._reporter.report(f)
 
             # Update UI
             row = [f['name'], f['severity'], url, f['description'][:100] + "..."]
