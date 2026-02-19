@@ -1,0 +1,34 @@
+# Java
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mtj.tmp/
+*.orig
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Burp
+*.log
+burp.db
