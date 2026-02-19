@@ -17,6 +17,12 @@ cd extensions/custom-decoder
 mvn package
 cd ../..
 
+# Logic Visualizer
+echo "Building Logic Visualizer..."
+cd extensions/logic-flaw-visualizer
+mvn package
+cd ../..
+
 echo "Java extensions built successfully."
 
 echo "Python extensions require no build step (load directly into Burp)."

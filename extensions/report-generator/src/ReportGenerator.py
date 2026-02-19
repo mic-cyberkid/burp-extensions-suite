@@ -11,6 +11,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../..
 
 from ReportLogic import ReportLogic
 from burp_utils import get_logger
+from burp_shared import FindingReporter
 
 logger = get_logger("ReportGenerator")
 
@@ -30,6 +31,9 @@ class BurpExtender(IBurpExtender, ITab, IExtensionStateListener):
         # Register listeners
         callbacks.registerExtensionStateListener(self)
         callbacks.addSuiteTab(self)
+
+        # Register with shared reporter
+        FindingReporter.get().register_callback(self.addFinding)
 
         logger.info("Report Generator loaded. Persistence at: " + persistence_path)
 

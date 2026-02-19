@@ -3,6 +3,12 @@
 import base64
 import json
 import math
+import sys
+import os
+
+# Add common to path
+sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
+from entropy_utils import calculate_shannon_entropy
 
 class AuthLogic:
     def decode_jwt(self, token):
@@ -58,22 +64,9 @@ class AuthLogic:
 
         return findings
 
-    def calculate_entropy(self, data):
-        """
-        Calculates Shannon entropy of a string.
-        """
-        if not data:
-            return 0
-        entropy = 0
-        for x in range(256):
-            p_x = float(data.count(chr(x))) / len(data)
-            if p_x > 0:
-                entropy += - p_x * math.log(p_x, 2)
-        return entropy
-
     def analyze_session_token(self, token):
         findings = []
-        entropy = self.calculate_entropy(token)
+        entropy = calculate_shannon_entropy(token)
 
         if entropy < 3.0 and len(token) > 8:
             findings.append({
@@ -109,3 +102,44 @@ class AuthLogic:
                     mutations.append({k: '1'})
                     mutations.append({k: 'admin'})
         return mutations
+
+    def compare_responses(self, resp1, resp2):
+        """
+        Compares two responses for the Multi-Session Matrix.
+        Returns a result indicating if they are similar.
+        """
+        if not resp1 or not resp2:
+            return "Error"
+
+        # Simple comparison: Status code and Length
+        if resp1.getStatusCode() != resp2.getStatusCode():
+            return "Different (Status)"
+
+        len1 = len(resp1.getResponse())
+        len2 = len(resp2.getResponse())
+        diff = abs(len1 - len2)
+        if diff > (max(len1, len2) * 0.1):
+            return "Different (Length)"
+
+        return "Same"
+
+    def analyze_token_collection(self, tokens):
+        """
+        Statistical analysis for Token Oracle.
+        """
+        if not tokens:
+            return "No tokens"
+
+        count = len(tokens)
+        entropies = [calculate_shannon_entropy(t) for t in tokens]
+        avg_entropy = sum(entropies) / count
+
+        unique_count = len(set(tokens))
+        predictability = "High" if unique_count < count * 0.9 else "Low"
+
+        return {
+            'count': count,
+            'avg_entropy': avg_entropy,
+            'unique': unique_count,
+            'predictability': predictability
+        }

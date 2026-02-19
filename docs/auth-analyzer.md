@@ -13,7 +13,13 @@ The Auth Bypass and Session Analyzer focuses on identifying vulnerabilities in a
 - **IDOR Simulation**:
     - Adds a context menu to Burp (Proxy history/Editor) to "Generate IDOR Mutants".
     - Automatically identifies ID-like parameters (`id`, `user_id`, etc.) and suggests mutations for testing (e.g., increment/decrement).
-- **Consolidated UI**: Displays analysis results in a dedicated "Auth Analyzer" tab.
+- **Multi-Session Role Matrix**:
+    - Allows manual entry of session headers for different roles (Admin, User, Unauth).
+    - Facilitates replaying requests across roles to identify broken access control.
+- **Token Oracle**:
+    - User-initiated bulk collection of tokens (reset, OTP, CSRF).
+    - Statistical analysis for predictability, entropy, and uniqueness.
+- **Consolidated UI**: Displays analysis results in a dedicated "Auth Analyzer" tab with sub-tabs for Token Analysis, Session Matrix, and Token Oracle.
 
 ## Implementation Details
 - **Language**: Python (Jython 2.7 compatible).

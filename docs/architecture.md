@@ -12,11 +12,16 @@ graph TD
         PS[Passive Scanner]
         AA[Auth Analyzer]
         RG[Report Generator]
+        RO[Reset/OTP Analyzer]
+        JS[JS Miner]
+        CH[Cloud Hunter]
+        TD[Tech Detector]
     end
 
     subgraph "Montoya API (Java)"
         PF[Param Fuzzer]
         CD[Custom Decoder]
+        LV[Logic Visualizer]
     end
 
     Burp --> PS
@@ -24,6 +29,11 @@ graph TD
     Burp --> RG
     Burp --> PF
     Burp --> CD
+    Burp --> RO
+    Burp --> LV
+    Burp --> JS
+    Burp --> CH
+    Burp --> TD
 
     PS -.-> RG
     AA -.-> RG
