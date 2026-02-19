@@ -11,6 +11,9 @@ A collection of five custom Burp Suite extensions designed for high-grade web ap
 5.  **Report Generator and Vulnerability Tracker** (Python/Legacy API): Aggregates findings from all extensions, tracks them across sessions, and exports reports in Markdown/HTML.
 6.  **Reset/OTP Weakness & Poisoning Analyzer** (Python/Legacy API): Specialized tool for identifying flaws in password reset and OTP flows, including Host header poisoning.
 7.  **Logic Flaw & State Machine Visualizer** (Java/Montoya API): Visualizes application state transitions to identify logical bypasses and step-skipping vulnerabilities.
+8.  **JS Link & Secret Miner** (Python/Legacy API): Extracts endpoints and sensitive secrets (API keys, tokens) from JavaScript files.
+9.  **Cloud Metadata & Bucket Hunter** (Python/Legacy API): Identifies leaked cloud infrastructure details and metadata service endpoints.
+10. **Fingerprinting & Tech Stack Detector** (Python/Legacy API): Automatically identifies the application's technology stack from headers, cookies, and content.
 
 ## Project Structure
 

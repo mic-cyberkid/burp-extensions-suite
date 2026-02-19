@@ -13,6 +13,9 @@ graph TD
         AA[Auth Analyzer]
         RG[Report Generator]
         RO[Reset/OTP Analyzer]
+        JS[JS Miner]
+        CH[Cloud Hunter]
+        TD[Tech Detector]
     end
 
     subgraph "Montoya API (Java)"
@@ -28,6 +31,9 @@ graph TD
     Burp --> CD
     Burp --> RO
     Burp --> LV
+    Burp --> JS
+    Burp --> CH
+    Burp --> TD
 
     PS -.-> RG
     AA -.-> RG

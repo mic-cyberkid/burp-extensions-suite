@@ -13,5 +13,8 @@ python3 extensions/passive-scanner/tests/test_scanner_logic.py
 python3 extensions/auth-analyzer/tests/test_auth_logic.py
 python3 extensions/report-generator/tests/test_report_logic.py
 python3 extensions/reset-otp-analyzer/tests/test_reset_otp_logic.py
+python3 extensions/js-miner/tests/test_js_miner_logic.py
+python3 extensions/cloud-hunter/tests/test_cloud_hunter_logic.py
+python3 extensions/tech-stack-detector/tests/test_tech_stack_logic.py
 
 echo "All tests passed successfully!"
