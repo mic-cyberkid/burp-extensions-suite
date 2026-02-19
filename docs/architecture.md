@@ -19,6 +19,7 @@ graph TD
         GQ[GraphQL Auditor]
         AM[API Miner]
         SH[Subdomain Hunter]
+        JI[JWT IDOR Tester]
     end
 
     subgraph "Montoya API (Java)"
@@ -40,6 +41,7 @@ graph TD
     Burp --> GQ
     Burp --> AM
     Burp --> SH
+    Burp --> JI
 
     PS -.-> RG
     AA -.-> RG
