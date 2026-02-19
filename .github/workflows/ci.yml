@@ -37,29 +37,24 @@ jobs:
 
     - name: Package All Extensions
       run: |
-        mkdir -p dist/java dist/python
-        # Collect Java JARs
-        cp extensions/param-fuzzer/target/*-jar-with-dependencies.jar dist/java/ParamFuzzer.jar
-        cp extensions/custom-decoder/target/*-jar-with-dependencies.jar dist/java/CustomDecoder.jar
-        cp extensions/logic-flaw-visualizer/target/*-jar-with-dependencies.jar dist/java/LogicVisualizer.jar
+        mkdir -p dist
+        # Copy entire structure but only necessary files to preserve paths
+        cp -r common extensions README.md LICENSE dist/
 
-        # Collect Python Scripts
-        cp extensions/passive-scanner/src/PassiveScanner.py dist/python/
-        cp extensions/auth-analyzer/src/AuthAnalyzer.py dist/python/
-        cp extensions/report-generator/src/ReportGenerator.py dist/python/
-        cp extensions/reset-otp-analyzer/src/ResetOtpAnalyzer.py dist/python/
-        cp extensions/js-miner/src/JSMiner.py dist/python/
-        cp extensions/cloud-hunter/src/CloudHunter.py dist/python/
-        cp extensions/tech-stack-detector/src/TechStackDetector.py dist/python/
-        cp extensions/graphql-auditor/src/GraphQLAuditor.py dist/python/
-        cp extensions/api-miner/src/APIMiner.py dist/python/
-        cp extensions/subdomain-hunter/src/SubdomainHunter.py dist/python/
+        # Remove unnecessary files from dist to keep it clean
+        find dist -name "tests" -type d -exec rm -rf {} +
+        find dist -name "target" -type d -exec rm -rf {} +
+        find dist -name "pom.xml" -exec rm -f {} +
+        find dist -name "*.java" -exec rm -f {} +
 
-        # Include shared utils for Python (important for loading)
-        cp -r common/python dist/python/common
+        # Add back compiled JARs
+        mkdir -p dist/jars
+        cp extensions/param-fuzzer/target/*-jar-with-dependencies.jar dist/jars/ParamFuzzer.jar
+        cp extensions/custom-decoder/target/*-jar-with-dependencies.jar dist/jars/CustomDecoder.jar
+        cp extensions/logic-flaw-visualizer/target/*-jar-with-dependencies.jar dist/jars/LogicVisualizer.jar
 
         # Create ZIP
-        zip -r burp-extensions-suite-full.zip dist/ README.md LICENSE
+        zip -r burp-extensions-suite-full.zip dist/
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v3

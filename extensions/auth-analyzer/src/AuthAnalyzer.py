@@ -2,7 +2,8 @@ from burp import IBurpExtender
 from burp import IHttpListener
 from burp import ITab
 from burp import IContextMenuFactory
-from javax.swing import JPanel, JScrollPane, JTable, JLabel, BorderLayout, JButton, JTextArea, SwingUtilities, JTabbedPane, JTextField
+from javax.swing import JPanel, JScrollPane, JTable, JLabel, JButton, JTextArea, SwingUtilities, JTabbedPane, JTextField
+from java.awt import BorderLayout
 from javax.swing.table import DefaultTableModel
 from java.util import ArrayList
 from javax.swing import JMenuItem

@@ -1,7 +1,8 @@
 from burp import IBurpExtender
 from burp import IHttpListener
 from burp import ITab
-from javax.swing import JPanel, JScrollPane, JTable, JLabel, BorderLayout, SwingUtilities
+from javax.swing import JPanel, JScrollPane, JTable, JLabel, SwingUtilities
+from java.awt import BorderLayout
 from javax.swing.table import DefaultTableModel
 import sys
 import os
@@ -15,6 +16,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../..
 
 from ScannerLogic import ScannerLogic
 from burp_utils import get_logger
+from burp_shared import FindingReporter
 
 logger = get_logger("PassiveScanner")
 
@@ -85,6 +87,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         findings = self.logic.analyze_response(url, status_code, headers)
 
         for finding in findings:
+            # Report to shared reporter
+            FindingReporter.get().report(finding)
+
             # Avoid duplicate findings for the same URL and Issue
             finding_key = (url, finding['name'])
             if finding_key not in [ (f[3], f[0]) for f in self.findings]:

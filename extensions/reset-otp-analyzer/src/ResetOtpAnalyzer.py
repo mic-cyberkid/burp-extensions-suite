@@ -1,7 +1,8 @@
 from burp import IBurpExtender
 from burp import IHttpListener
 from burp import ITab
-from javax.swing import JPanel, JScrollPane, JTable, JLabel, BorderLayout, JButton, SwingUtilities
+from javax.swing import JPanel, JScrollPane, JTable, JLabel, JButton, SwingUtilities
+from java.awt import BorderLayout
 from javax.swing.table import DefaultTableModel
 import sys
 import os
