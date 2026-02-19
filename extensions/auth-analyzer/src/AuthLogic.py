@@ -7,7 +7,12 @@ import sys
 import os
 
 # Add common to path
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
+try:
+    _common_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python")
+    if _common_path not in sys.path: sys.path.append(_common_path)
+except NameError:
+    pass
+
 from entropy_utils import calculate_shannon_entropy
 
 class AuthLogic:

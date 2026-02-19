@@ -7,20 +7,27 @@ from javax.swing.table import DefaultTableModel
 import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../../common/python"))
-
-from ReportLogic import ReportLogic
-from burp_utils import get_logger
-from burp_shared import FindingReporter
-
-logger = get_logger("ReportGenerator")
-
 class BurpExtender(IBurpExtender, ITab, IExtensionStateListener):
     def registerExtenderCallbacks(self, callbacks):
+        # Resolve paths without relying on __file__
+        extension_file = callbacks.getExtensionFilename()
+        base_dir = os.path.dirname(extension_file)
+        common_dir = os.path.join(base_dir, "../../../common/python")
+
+        if base_dir not in sys.path: sys.path.append(base_dir)
+        if common_dir not in sys.path: sys.path.append(common_dir)
+
+        # Deferred imports to ensure sys.path is ready
+        from ReportLogic import ReportLogic
+        from burp_utils import get_logger
+        from burp_shared import FindingReporter
+
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         self._callbacks.setExtensionName("Report Generator and Vulnerability Tracker")
+
+        self._logger = get_logger("ReportGenerator")
+        self._reporter = FindingReporter.get()
 
         # Path for persistence
         persistence_path = os.path.join(os.path.expanduser("~"), "burp_vuln_tracker.json")
@@ -34,9 +41,9 @@ class BurpExtender(IBurpExtender, ITab, IExtensionStateListener):
         callbacks.addSuiteTab(self)
 
         # Register with shared reporter
-        FindingReporter.get().register_callback(self.addFinding)
+        self._reporter.register_callback(self.addFinding)
 
-        logger.info("Report Generator loaded. Persistence at: " + persistence_path)
+        self._logger.info("Report Generator loaded. Persistence at: " + persistence_path)
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -92,7 +99,7 @@ class BurpExtender(IBurpExtender, ITab, IExtensionStateListener):
                     f.write(content)
                 self._callbacks.issueAlert("Report exported to " + file_path)
             except Exception as e:
-                logger.error("Failed to export report: " + str(e))
+                self._logger.error("Failed to export report: " + str(e))
 
     def getTabCaption(self):
         return "Tracker"
@@ -102,7 +109,7 @@ class BurpExtender(IBurpExtender, ITab, IExtensionStateListener):
 
     def extensionUnloaded(self):
         self.logic.save_findings()
-        logger.info("Report Generator unloaded.")
+        self._logger.info("Report Generator unloaded.")
 
     # Public API for other extensions
     def addFinding(self, name, severity, confidence, url, description, remediation):
