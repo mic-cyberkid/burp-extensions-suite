@@ -6,9 +6,11 @@ A collection of five custom Burp Suite extensions designed for high-grade web ap
 
 1.  **Passive Vulnerability Scanner** (Python/Legacy API): Analyzes responses for missing/weak security headers and misconfigurations.
 2.  **Automated Parameter Fuzzer** (Java/Montoya API): Smart fuzzing for injection vulnerabilities like SQLi and XSS with anomaly detection.
-3.  **Auth Bypass and Session Analyzer** (Python/Legacy API): Analyzes session tokens (including JWTs), checks entropy, and simulates IDOR attacks.
+3.  **Auth Bypass and Session Analyzer** (Python/Legacy API): Enhanced with a Multi-Session Role Matrix and Token Oracle for bulk predictability analysis.
 4.  **Custom Decoder/Encoder** (Java/Montoya API): A flexible framework for handling non-standard data formats (XOR, Custom Base64, etc.) with auto-detection.
-5.  **Report Generator and Vulnerability Tracker** (Python/Legacy API): Aggregates findings, tracks them across sessions, and exports reports in Markdown/HTML.
+5.  **Report Generator and Vulnerability Tracker** (Python/Legacy API): Aggregates findings from all extensions, tracks them across sessions, and exports reports in Markdown/HTML.
+6.  **Reset/OTP Weakness & Poisoning Analyzer** (Python/Legacy API): Specialized tool for identifying flaws in password reset and OTP flows, including Host header poisoning.
+7.  **Logic Flaw & State Machine Visualizer** (Java/Montoya API): Visualizes application state transitions to identify logical bypasses and step-skipping vulnerabilities.
 
 ## Project Structure
 

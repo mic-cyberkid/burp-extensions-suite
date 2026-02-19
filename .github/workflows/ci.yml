@@ -29,6 +29,7 @@ jobs:
         ./scripts/build-all.sh
         cd extensions/param-fuzzer && mvn test
         cd ../../extensions/custom-decoder && mvn test
+        cd ../../extensions/logic-flaw-visualizer && mvn test
 
     - name: Run Python Tests
       run: |
@@ -41,3 +42,4 @@ jobs:
         path: |
           extensions/param-fuzzer/target/*-jar-with-dependencies.jar
           extensions/custom-decoder/target/*-jar-with-dependencies.jar
+          extensions/logic-flaw-visualizer/target/*-jar-with-dependencies.jar
