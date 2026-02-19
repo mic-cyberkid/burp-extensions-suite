@@ -14,6 +14,9 @@ A collection of five custom Burp Suite extensions designed for high-grade web ap
 8.  **JS Link & Secret Miner** (Python/Legacy API): Extracts endpoints and sensitive secrets (API keys, tokens) from JavaScript files.
 9.  **Cloud Metadata & Bucket Hunter** (Python/Legacy API): Identifies leaked cloud infrastructure details and metadata service endpoints.
 10. **Fingerprinting & Tech Stack Detector** (Python/Legacy API): Automatically identifies the application's technology stack from headers, cookies, and content.
+11. **GraphQL Security Auditor** (Python/Legacy API): Scans for common GraphQL misconfigurations (introspection enabled) and sensitive field exposure.
+12. **API Documentation & Swagger Miner** (Python/Legacy API): Automatically discovers and maps API documentation (Swagger/OpenAPI) and extracts endpoints.
+13. **Subdomain Takeover & CNAME Hunter** (Python/Legacy API): Passively checks for CNAMEs pointing to potentially unclaimed services (e.g., S3, Heroku, Github Pages).
 
 ## Project Structure
 

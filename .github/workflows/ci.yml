@@ -35,11 +35,29 @@ jobs:
       run: |
         ./scripts/test-all.sh
 
+    - name: Package All Extensions
+      run: |
+        mkdir -p dist
+        # Copy entire structure but only necessary files to preserve paths
+        cp -r common extensions README.md LICENSE dist/
+
+        # Remove unnecessary files from dist to keep it clean
+        find dist -name "tests" -type d -exec rm -rf {} +
+        find dist -name "target" -type d -exec rm -rf {} +
+        find dist -name "pom.xml" -exec rm -f {} +
+        find dist -name "*.java" -exec rm -f {} +
+
+        # Add back compiled JARs
+        mkdir -p dist/jars
+        cp extensions/param-fuzzer/target/*-jar-with-dependencies.jar dist/jars/ParamFuzzer.jar
+        cp extensions/custom-decoder/target/*-jar-with-dependencies.jar dist/jars/CustomDecoder.jar
+        cp extensions/logic-flaw-visualizer/target/*-jar-with-dependencies.jar dist/jars/LogicVisualizer.jar
+
+        # Create ZIP
+        zip -r burp-extensions-suite-full.zip dist/
+
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: burp-extensions-jars
-        path: |
-          extensions/param-fuzzer/target/*-jar-with-dependencies.jar
-          extensions/custom-decoder/target/*-jar-with-dependencies.jar
-          extensions/logic-flaw-visualizer/target/*-jar-with-dependencies.jar
+        name: burp-extensions-suite-full
+        path: burp-extensions-suite-full.zip

@@ -16,6 +16,9 @@ graph TD
         JS[JS Miner]
         CH[Cloud Hunter]
         TD[Tech Detector]
+        GQ[GraphQL Auditor]
+        AM[API Miner]
+        SH[Subdomain Hunter]
     end
 
     subgraph "Montoya API (Java)"
@@ -34,6 +37,9 @@ graph TD
     Burp --> JS
     Burp --> CH
     Burp --> TD
+    Burp --> GQ
+    Burp --> AM
+    Burp --> SH
 
     PS -.-> RG
     AA -.-> RG
