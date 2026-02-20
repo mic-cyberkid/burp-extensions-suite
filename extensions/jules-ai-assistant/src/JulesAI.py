@@ -1,7 +1,7 @@
 from burp import IBurpExtender
 from burp import ITab
 from burp import IContextMenuFactory
-from javax.swing import JPanel, JScrollPane, JTextArea, JLabel, JButton, SwingUtilities, JTextField
+from javax.swing import JPanel, JScrollPane, JTextArea, JLabel, JButton, SwingUtilities, JTextField, JComboBox
 from java.awt import BorderLayout, GridLayout, Font
 from java.util import ArrayList
 from javax.swing import JMenuItem
@@ -44,7 +44,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         callbacks.registerContextMenuFactory(self)
         callbacks.addSuiteTab(self)
 
-        self._logger.info("Jules AI Assistant loaded. Integration with Google Jules API complete.")
+        self._logger.info("Jules AI Assistant loaded. Hybrid backend support enabled.")
 
     def setup_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -53,12 +53,17 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.chat_area = JTextArea()
         self.chat_area.setEditable(False)
         self.chat_area.setFont(Font("Monospaced", Font.PLAIN, 12))
-        self.chat_area.setText("Welcome to Jules AI (Integrated Agentic Edition).\n" + ("-"*60) + "\n")
+        self.chat_area.setText("Welcome to Jules AI (Hybrid Edition).\n" + ("-"*60) + "\n")
 
         # Configuration Panel
-        config_panel = JPanel(GridLayout(7, 2))
+        config_panel = JPanel(GridLayout(9, 2))
 
-        config_panel.add(JLabel("X-Goog-Api-Key:"))
+        config_panel.add(JLabel("Backend Type:"))
+        self.backend_combo = JComboBox(["openai", "google_jules"])
+        self.backend_combo.setSelectedItem(self.logic.config.get("backend_type", "openai"))
+        config_panel.add(self.backend_combo)
+
+        config_panel.add(JLabel("API Key (Bearer / X-Goog-Api-Key):"))
         self.api_key_field = JTextField(self.logic.config["api_key"])
         config_panel.add(self.api_key_field)
 
@@ -66,7 +71,11 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.endpoint_field = JTextField(self.logic.config["endpoint"])
         config_panel.add(self.endpoint_field)
 
-        config_panel.add(JLabel("Source ID (e.g. sources/github/...):"))
+        config_panel.add(JLabel("Model (OpenAI mode only):"))
+        self.model_field = JTextField(self.logic.config.get("model", "gpt-4o"))
+        config_panel.add(self.model_field)
+
+        config_panel.add(JLabel("Source ID (Google Jules mode only):"))
         self.source_id_field = JTextField(self.logic.config["source_id"])
         config_panel.add(self.source_id_field)
 
@@ -88,8 +97,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.panel.add(JScrollPane(self.chat_area), BorderLayout.CENTER)
 
     def save_config(self):
+        self.logic.config["backend_type"] = self.backend_combo.getSelectedItem()
         self.logic.config["api_key"] = self.api_key_field.getText()
         self.logic.config["endpoint"] = self.endpoint_field.getText()
+        self.logic.config["model"] = self.model_field.getText()
         self.logic.config["source_id"] = self.source_id_field.getText()
         self.logic.config["session_id"] = self.session_id_field.getText()
         self.logic.save_config()
@@ -124,21 +135,30 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
 
         def task():
             try:
-                # Ensure latest UI values are in logic config
+                # Sync UI values
+                self.logic.config["backend_type"] = self.backend_combo.getSelectedItem()
                 self.logic.config["api_key"] = self.api_key_field.getText()
                 self.logic.config["endpoint"] = self.endpoint_field.getText()
+                self.logic.config["model"] = self.model_field.getText()
                 self.logic.config["source_id"] = self.source_id_field.getText()
 
                 max_iter = int(self.max_iter_field.getText())
 
-                # Format initial investigative prompt
-                current_prompt = self.logic.format_analysis_prompt(url, req_str, resp_str)
+                # Internal conversation history for OpenAI-style backends
+                convo = [
+                    {"role": "system", "content": self.logic.system_prompt},
+                    {"role": "user", "content": self.logic.format_analysis_prompt(url, req_str, resp_str)}
+                ]
 
                 for i in range(max_iter):
-                    SwingUtilities.invokeLater(lambda: self.chat_area.append("[...] Jules AI is reasoning (Step {}/{})...\n".format(i+1, max_iter)))
+                    mode = self.logic.config["backend_type"]
+                    SwingUtilities.invokeLater(lambda m=mode, it=i, mx=max_iter:
+                        self.chat_area.append("[...] Jules AI ({}) is reasoning (Step {}/{})...\n".format(m, it+1, mx)))
 
-                    response_text = self.logic.call_jules(current_prompt)
+                    response_text = self.logic.call_agent(convo, iteration=i)
                     SwingUtilities.invokeLater(lambda t=response_text: self.chat_area.append("Jules AI: " + t + "\n"))
+
+                    convo.append({"role": "assistant", "content": response_text})
 
                     tool_calls = self.logic.parse_tool_call(response_text)
                     if not tool_calls:
@@ -150,10 +170,10 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
                         tool_results.append(result)
                         SwingUtilities.invokeLater(lambda r=result: self.chat_area.append("[Tool Result] " + str(r)[:500] + "...\n"))
 
-                    current_prompt = "Tool results: " + json.dumps(tool_results)
+                    convo.append({"role": "user", "content": "Tool results: " + json.dumps(tool_results)})
 
-                # Update Session ID in UI after run
-                SwingUtilities.invokeLater(lambda: self.session_id_field.setText(self.logic.config["session_id"]))
+                # Update Session ID in UI
+                SwingUtilities.invokeLater(lambda: self.session_id_field.setText(self.logic.config.get("session_id", "")))
                 SwingUtilities.invokeLater(lambda: self.chat_area.append("-" * 60 + "\n"))
 
             except Exception as e:
@@ -195,7 +215,9 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         elif tool_name == "base64_decode":
             data = params.get("data", "")
             try:
-                return base64.b64decode(data)
+                # Use java.util.Base64 for reliable Jython behavior
+                from java.util import Base64
+                return self._helpers.bytesToString(Base64.getDecoder().decode(data))
             except:
                 return "Invalid base64"
 

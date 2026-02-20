@@ -32,14 +32,19 @@ class JulesAILogic:
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, 'r') as f:
-                    return json.load(f)
+                    cfg = json.load(f)
+                    # Migrating old config or setting defaults
+                    if "backend_type" not in cfg: cfg["backend_type"] = "openai"
+                    return cfg
             except:
                 pass
         return {
             "api_key": "",
-            "endpoint": "https://jules.googleapis.com/v1alpha",
+            "endpoint": "https://api.openai.com/v1/chat/completions",
             "source_id": "",
-            "session_id": ""
+            "session_id": "",
+            "backend_type": "openai",
+            "model": "gpt-4o"
         }
 
     def save_config(self):
@@ -88,8 +93,6 @@ class JulesAILogic:
 
     def _make_request(self, url, method="GET", data=None, headers=None):
         if headers is None: headers = {}
-        if self.config["api_key"]:
-            headers["X-Goog-Api-Key"] = self.config["api_key"]
         headers["Content-Type"] = "application/json"
 
         json_data = json.dumps(data) if data else None
@@ -108,67 +111,86 @@ class JulesAILogic:
 
         return json.loads(response.read())
 
-    def create_session(self, initial_prompt):
-        url = "{}/sessions".format(self.config["endpoint"])
+    def call_openai(self, convo):
+        """
+        Direct LLM call for OpenAI-compatible backends.
+        """
+        headers = {'Authorization': 'Bearer ' + self.config["api_key"]}
+        url = self.config["endpoint"]
         payload = {
-            "prompt": self.system_prompt + "\n\n" + initial_prompt,
-            "sourceContext": {
-                "source": self.config["source_id"]
-            },
-            "title": "Burp Suite Analysis Session"
+            "model": self.config.get("model", "gpt-4o"),
+            "messages": convo,
+            "temperature": 0.7
         }
-        result = self._make_request(url, "POST", payload)
-        self.config["session_id"] = result["id"]
-        self.save_config()
-        return result["id"]
+        result = self._make_request(url, "POST", payload, headers)
+        if 'choices' in result:
+            return result['choices'][0]['message']['content']
+        return str(result)
 
-    def send_message(self, session_id, prompt):
-        url = "{}/sessions/{}:sendMessage".format(self.config["endpoint"], session_id)
-        payload = {"prompt": prompt}
-        return self._make_request(url, "POST", payload)
+    def call_google_jules(self, prompt, is_initial=False):
+        """
+        Call for Google Jules API (Session-based).
+        """
+        if not self.config["source_id"]:
+            return "Error: Source ID is required for Google Jules backend. If you are testing a web app without source code, use the 'OpenAI/Standard' backend."
 
-    def poll_for_response(self, session_id):
+        endpoint = self.config["endpoint"]
+        headers = {"X-Goog-Api-Key": self.config["api_key"]}
+
+        sid = self.config.get("session_id")
+
+        if is_initial or not sid:
+            # Create Session
+            url = "{}/sessions".format(endpoint)
+            payload = {
+                "prompt": self.system_prompt + "\n\n" + prompt,
+                "sourceContext": {"source": self.config["source_id"]},
+                "title": "Burp Investigative Session"
+            }
+            result = self._make_request(url, "POST", payload, headers)
+            sid = result["id"]
+            self.config["session_id"] = sid
+            self.save_config()
+        else:
+            # Send Message
+            url = "{}/sessions/{}:sendMessage".format(endpoint, sid)
+            payload = {"prompt": prompt}
+            try:
+                self._make_request(url, "POST", payload, headers)
+            except:
+                # Retry with new session if message failed
+                return self.call_google_jules(prompt, is_initial=True)
+
+        return self.poll_for_google_jules_response(sid)
+
+    def poll_for_google_jules_response(self, session_id):
         url = "{}/sessions/{}/activities".format(self.config["endpoint"], session_id)
-        # We need the latest activity from the 'agent'
-        # Simple polling logic
-        for _ in range(30): # 30 attempts, 2s each = 60s timeout
-            activities = self._make_request(url, "GET")
+        headers = {"X-Goog-Api-Key": self.config["api_key"]}
+
+        for _ in range(30):
+            activities = self._make_request(url, "GET", headers=headers)
             if "activities" in activities:
-                # Iterate backwards to find latest agent message
                 for act in reversed(activities["activities"]):
                     if act.get("originator") == "agent":
-                        # Check if it contains a message or progress
                         if "message" in act:
                             return act["message"]["text"]
-                        elif "progressUpdated" in act:
-                            # Sometimes agent updates progress before full message
-                            # But we usually want the message
-                            pass
-                        elif "planGenerated" in act:
-                            # Handle initial plan generation if necessary
-                            steps = act["planGenerated"]["plan"]["steps"]
-                            return "Plan generated: " + ", ".join([s["title"] for s in steps])
             time.sleep(2)
-        return "Timeout waiting for Jules AI response."
+        return "Timeout waiting for Google Jules response."
 
-    def call_jules(self, prompt):
+    def call_agent(self, convo, iteration=0):
         """
-        Unified call that handles session creation or message sending.
+        Unified agent call that selects the appropriate backend.
         """
         if not self.config["api_key"]:
-            return "SIMULATION: No Google API Key provided. Please set it in the Jules AI tab."
+            return "SIMULATION: No API Key provided."
 
         try:
-            sid = self.config.get("session_id")
-            if not sid:
-                sid = self.create_session(prompt)
+            if self.config["backend_type"] == "google_jules":
+                # Jules API takes the last user message as prompt
+                # Note: Jules API manages its own history in the session
+                return self.call_google_jules(convo[-1]["content"], is_initial=(iteration==0))
             else:
-                try:
-                    self.send_message(sid, prompt)
-                except:
-                    # Session might have expired, try creating a new one
-                    sid = self.create_session(prompt)
-
-            return self.poll_for_response(sid)
+                # OpenAI/Standard backend requires sending the full convo
+                return self.call_openai(convo)
         except Exception as e:
-            return "Error calling Jules API: " + str(e)
+            return "Error: " + str(e)
