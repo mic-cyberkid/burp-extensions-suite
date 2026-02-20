@@ -3,6 +3,8 @@ import ssl
 import sys
 import base64
 import re
+import os
+import time
 
 try:
     import urllib2
@@ -11,7 +13,9 @@ except ImportError:
     import urllib.request as urllib2
 
 class JulesAILogic:
-    def __init__(self):
+    def __init__(self, config_path):
+        self.config_path = config_path
+        self.config = self.load_config()
         self.system_prompt = (
             "You are Jules AI, a ruthless and highly skilled web application penetration tester. "
             "You have access to Burp Suite tools via a special JSON format. "
@@ -21,32 +25,48 @@ class JulesAILogic:
             "1. http_request: Makes an HTTP request. Parameters: url, method, headers (list of strings), body. "
             "2. base64_decode: Decodes a base64 string. Parameter: data. "
             "3. report_finding: Logs a finding to the tracker. Parameters: name, severity, confidence, url, description, remediation. "
-            "After using a tool, you will receive the result and should continue your analysis. "
             "Always aim for high ROI bugs: IDOR, Logic Flaws, State Machine bypasses."
         )
 
+    def load_config(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {
+            "api_key": "",
+            "endpoint": "https://jules.googleapis.com/v1alpha",
+            "source_id": "",
+            "session_id": ""
+        }
+
+    def save_config(self):
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(self.config, f, indent=4)
+        except:
+            pass
+
     def format_analysis_prompt(self, url, request, response):
-        prompt = "Initial Target URL: {}\n\n".format(url)
-        prompt += "ORIGINAL REQUEST:\n{}\n\n".format(request[:2000])
+        prompt = "Investigative Task: Perform a ruthless security analysis of the following interaction.\n"
+        prompt += "URL: {}\n\n".format(url)
+        prompt += "REQUEST:\n{}\n\n".format(request[:2000])
         if response:
-            prompt += "ORIGINAL RESPONSE:\n{}\n\n".format(response[:3000])
+            prompt += "RESPONSE:\n{}\n\n".format(response[:3000])
 
         prompt += (
-            "Deeply analyze this interaction. You can use tools to probe further or decode data. "
-            "If you find a bug, use 'report_finding'. If you need more info, use 'http_request'. "
-            "Start by identifying interesting parameters or headers."
+            "Identify potential IDORs, logic flaws, or misconfigurations. "
+            "Use tools if necessary to probe further."
         )
         return prompt
 
     def parse_tool_call(self, ai_text):
-        """
-        Attempts to find balanced JSON blocks containing a "tool" key.
-        """
         tool_calls = []
         i = 0
         while i < len(ai_text):
             if ai_text[i] == '{':
-                # Start of a potential JSON block
                 stack = 0
                 for j in range(i, len(ai_text)):
                     if ai_text[j] == '{':
@@ -55,60 +75,100 @@ class JulesAILogic:
                         stack -= 1
 
                     if stack == 0:
-                        # Balanced block found
                         candidate = ai_text[i:j+1]
                         if '"tool"' in candidate:
                             try:
                                 tool_calls.append(json.loads(candidate))
-                                i = j # Move pointer to end of this block
+                                i = j
                             except:
                                 pass
                         break
             i += 1
         return tool_calls
 
-    def call_llm(self, api_key, endpoint, messages, model="gpt-4o"):
-        """
-        Raw call to the LLM.
-        """
-        if not api_key:
-             # Simulation fallback for testing
-             last_msg = messages[-1]['content']
-             if "tool" in last_msg.lower(): return "I have used a tool."
-             return "SIMULATION: No API key provided."
+    def _make_request(self, url, method="GET", data=None, headers=None):
+        if headers is None: headers = {}
+        if self.config["api_key"]:
+            headers["X-Goog-Api-Key"] = self.config["api_key"]
+        headers["Content-Type"] = "application/json"
+
+        json_data = json.dumps(data) if data else None
+        req = urllib2.Request(url, json_data, headers)
+        req.get_method = lambda: method
 
         try:
-            data = json.dumps({
-                "model": model,
-                "messages": messages,
-                "temperature": 0.7
-            })
+            ctx = ssl.create_default_context()
+        except AttributeError:
+            ctx = None
 
-            headers = {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + api_key
-            }
+        if ctx:
+            response = urllib2.urlopen(req, timeout=60, context=ctx)
+        else:
+            response = urllib2.urlopen(req, timeout=60)
 
-            req = urllib2.Request(endpoint, data, headers)
+        return json.loads(response.read())
 
-            try:
-                ctx = ssl.create_default_context()
-            except AttributeError:
-                ctx = None
+    def create_session(self, initial_prompt):
+        url = "{}/sessions".format(self.config["endpoint"])
+        payload = {
+            "prompt": self.system_prompt + "\n\n" + initial_prompt,
+            "sourceContext": {
+                "source": self.config["source_id"]
+            },
+            "title": "Burp Suite Analysis Session"
+        }
+        result = self._make_request(url, "POST", payload)
+        self.config["session_id"] = result["id"]
+        self.save_config()
+        return result["id"]
 
-            if ctx:
-                response = urllib2.urlopen(req, timeout=60, context=ctx)
+    def send_message(self, session_id, prompt):
+        url = "{}/sessions/{}:sendMessage".format(self.config["endpoint"], session_id)
+        payload = {"prompt": prompt}
+        return self._make_request(url, "POST", payload)
+
+    def poll_for_response(self, session_id):
+        url = "{}/sessions/{}/activities".format(self.config["endpoint"], session_id)
+        # We need the latest activity from the 'agent'
+        # Simple polling logic
+        for _ in range(30): # 30 attempts, 2s each = 60s timeout
+            activities = self._make_request(url, "GET")
+            if "activities" in activities:
+                # Iterate backwards to find latest agent message
+                for act in reversed(activities["activities"]):
+                    if act.get("originator") == "agent":
+                        # Check if it contains a message or progress
+                        if "message" in act:
+                            return act["message"]["text"]
+                        elif "progressUpdated" in act:
+                            # Sometimes agent updates progress before full message
+                            # But we usually want the message
+                            pass
+                        elif "planGenerated" in act:
+                            # Handle initial plan generation if necessary
+                            steps = act["planGenerated"]["plan"]["steps"]
+                            return "Plan generated: " + ", ".join([s["title"] for s in steps])
+            time.sleep(2)
+        return "Timeout waiting for Jules AI response."
+
+    def call_jules(self, prompt):
+        """
+        Unified call that handles session creation or message sending.
+        """
+        if not self.config["api_key"]:
+            return "SIMULATION: No Google API Key provided. Please set it in the Jules AI tab."
+
+        try:
+            sid = self.config.get("session_id")
+            if not sid:
+                sid = self.create_session(prompt)
             else:
-                response = urllib2.urlopen(req, timeout=60)
+                try:
+                    self.send_message(sid, prompt)
+                except:
+                    # Session might have expired, try creating a new one
+                    sid = self.create_session(prompt)
 
-            body = response.read()
-            result = json.loads(body)
-
-            if 'choices' in result and len(result['choices']) > 0:
-                return result['choices'][0]['message']['content']
-            elif 'error' in result:
-                return "API Error: " + str(result['error'])
-            else:
-                return "Unexpected API response format: " + body
+            return self.poll_for_response(sid)
         except Exception as e:
-            return "Error calling Jules AI API: " + str(e)
+            return "Error calling Jules API: " + str(e)
