@@ -16,19 +16,18 @@ class TestJulesAILogic(unittest.TestCase):
         response = "HTTP/1.1 200 OK"
         prompt = self.logic.format_analysis_prompt(url, request, response)
         self.assertIn(url, prompt)
-        self.assertIn("REQUEST:", prompt)
-        self.assertIn("RESPONSE:", prompt)
+        self.assertIn("ORIGINAL REQUEST:", prompt)
 
-    def test_simulate_response(self):
-        prompt = "test login message"
-        response = self.logic.simulate_ai_response(prompt)
-        self.assertIn("JULES AI ANALYSIS", response)
-        self.assertIn("login", response.lower())
+    def test_parse_tool_call(self):
+        ai_text = 'Check this: {"tool": "http_request", "parameters": {"url": "http://test.com"}}'
+        calls = self.logic.parse_tool_call(ai_text)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['tool'], 'http_request')
 
-    def test_call_api_simulation(self):
-        # Without API key, it should fall back to simulation
-        response = self.logic.call_api("", "http://api.com", "test")
-        self.assertIn("Simulation Mode", response)
+    def test_call_llm_simulation(self):
+        # Without API key, it should return simulation text
+        response = self.logic.call_llm("", "http://api.com", [{"role": "user", "content": "test"}])
+        self.assertIn("SIMULATION", response)
 
 if __name__ == '__main__':
     unittest.main()
