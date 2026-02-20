@@ -18,6 +18,7 @@ A collection of five custom Burp Suite extensions designed for high-grade web ap
 12. **API Documentation & Swagger Miner** (Python/Legacy API): Automatically discovers and maps API documentation (Swagger/OpenAPI) and extracts endpoints.
 13. **Subdomain Takeover & CNAME Hunter** (Python/Legacy API): Passively checks for CNAMEs pointing to potentially unclaimed services (e.g., S3, Heroku, Github Pages).
 14. **JWT IDOR Tester** (Python/Legacy API): Ruthlessly tests for IDOR vulnerabilities in JWT-based authorization by mutating payload fields and bypassing signatures.
+15. **Jules AI Assistant** (Python/Legacy API): Integrates advanced AI reasoning into Burp for contextual analysis of requests/responses, logic flaw discovery, and exploit payload generation.
 
 ## Project Structure
 
