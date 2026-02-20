@@ -52,7 +52,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         self.chat_area.setText("Welcome to Jules AI. Send a request to begin analysis.\n" + ("-"*60) + "\n")
 
         # Configuration Panel
-        config_panel = JPanel(GridLayout(3, 2))
+        config_panel = JPanel(GridLayout(5, 2))
         config_panel.add(JLabel("AI API Endpoint:"))
         self.endpoint_field = JTextField("https://api.openai.com/v1/chat/completions")
         config_panel.add(self.endpoint_field)
@@ -60,6 +60,14 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
         config_panel.add(JLabel("API Key:"))
         self.api_key_field = JTextField("") # Leave empty for simulation
         config_panel.add(self.api_key_field)
+
+        config_panel.add(JLabel("Model (e.g. gpt-4o):"))
+        self.model_field = JTextField("gpt-4o")
+        config_panel.add(self.model_field)
+
+        config_panel.add(JLabel("System Prompt:"))
+        self.system_prompt_field = JTextField(self.logic.system_prompt)
+        config_panel.add(self.system_prompt_field)
 
         clear_btn = JButton("Clear Chat", actionPerformed=lambda x: self.chat_area.setText(""))
         config_panel.add(clear_btn)
@@ -101,11 +109,13 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory):
             prompt = self.logic.format_analysis_prompt(url, req_str, resp_str)
             api_key = self.api_key_field.getText()
             endpoint = self.endpoint_field.getText()
+            model = self.model_field.getText()
+            system_prompt = self.system_prompt_field.getText()
 
             # Show processing indicator
-            SwingUtilities.invokeLater(lambda: self.chat_area.append("[...] Thinking...\n"))
+            SwingUtilities.invokeLater(lambda: self.chat_area.append("[...] Jules AI is thinking (Model: {})...\n".format(model)))
 
-            analysis = self.logic.call_api(api_key, endpoint, prompt)
+            analysis = self.logic.call_api(api_key, endpoint, prompt, model=model, system_prompt=system_prompt)
 
             def update_ui(a=analysis):
                 self.chat_area.append(a + "\n")

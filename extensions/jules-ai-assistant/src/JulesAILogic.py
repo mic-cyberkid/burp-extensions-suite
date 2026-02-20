@@ -1,4 +1,12 @@
 import json
+import ssl
+import sys
+
+try:
+    import urllib2
+except ImportError:
+    # Python 3 compatibility for unit tests
+    import urllib.request as urllib2
 
 class JulesAILogic:
     def __init__(self):
@@ -28,7 +36,7 @@ class JulesAILogic:
         """
         if "login" in prompt.lower():
             return (
-                "JULES AI ANALYSIS:\n"
+                "JULES AI ANALYSIS (Simulation Mode):\n"
                 "- The login flow appears to use a standard POST request. Check for SQL Injection in the 'username' field.\n"
                 "- Verify if the session token generated has high entropy.\n"
                 "- PAYLOADS:\n"
@@ -36,22 +44,72 @@ class JulesAILogic:
                 "  2. \"><script>alert('JulesAI')</script>\n"
                 "  3. Try brute-forcing with the Multi-Session Matrix."
             )
-        return "JULES AI ANALYSIS:\nAnalyzing traffic... No immediate critical logic flaws detected. Perform manual exploration of identified parameters."
+        return "JULES AI ANALYSIS (Simulation Mode):\nAnalyzing traffic... No immediate critical logic flaws detected. Perform manual exploration of identified parameters."
 
-    def call_api(self, api_key, endpoint, prompt):
+    def call_api(self, api_key, endpoint, prompt, model="gpt-4o", system_prompt=None):
         """
-        Placeholder for real API call (e.g., to OpenAI or Anthropic).
+        Real API call to an OpenAI-compatible LLM provider.
         Uses urllib2 for Jython 2.7 compatibility.
         """
+        if system_prompt is None:
+            system_prompt = self.system_prompt
         if not api_key:
             return self.simulate_ai_response(prompt)
 
-        # In a real implementation, we would use urllib2 to POST to the endpoint
-        # Example structure:
-        # import urllib2
-        # data = json.dumps({"model": "gpt-4", "messages": [{"role": "system", "content": self.system_prompt}, {"role": "user", "content": prompt}]})
-        # req = urllib2.Request(endpoint, data, {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + api_key})
-        # response = urllib2.urlopen(req)
-        # return json.loads(response.read())['choices'][0]['message']['content']
+        try:
+            # Prepare request body (OpenAI Chat Completion format)
+            data = json.dumps({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7
+            })
 
-        return "API Key detected. (Real API call logic would go here). \n\n" + self.simulate_ai_response(prompt)
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + api_key
+            }
+
+            # Create request
+            req = urllib2.Request(endpoint, data, headers)
+
+            # SSL Context to handle modern TLS if necessary in older Jython
+            # Note: Modern Burp versions bundle a capable Jython environment
+            try:
+                ctx = ssl.create_default_context()
+            except AttributeError:
+                # Fallback for very old environments
+                ctx = None
+
+            # Execute request
+            if ctx:
+                response = urllib2.urlopen(req, timeout=60, context=ctx)
+            else:
+                response = urllib2.urlopen(req, timeout=60)
+
+            body = response.read()
+            result = json.loads(body)
+
+            # Parse result
+            if 'choices' in result and len(result['choices']) > 0:
+                ai_msg = result['choices'][0]['message']['content']
+                return ai_msg
+            elif 'error' in result:
+                return "API Error: " + str(result['error'])
+            else:
+                return "Unexpected API response format: " + body
+
+        except urllib2.HTTPError as e:
+            error_content = e.read()
+            try:
+                error_json = json.loads(error_content)
+                if 'error' in error_json:
+                    return "HTTP Error {}: {}".format(e.code, error_json['error']['message'])
+            except:
+                pass
+            return "HTTP Error {}: {}".format(e.code, error_content)
+
+        except Exception as e:
+            return "Error calling Jules AI API: " + str(e)

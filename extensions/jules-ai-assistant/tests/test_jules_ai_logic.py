@@ -25,5 +25,10 @@ class TestJulesAILogic(unittest.TestCase):
         self.assertIn("JULES AI ANALYSIS", response)
         self.assertIn("login", response.lower())
 
+    def test_call_api_simulation(self):
+        # Without API key, it should fall back to simulation
+        response = self.logic.call_api("", "http://api.com", "test")
+        self.assertIn("Simulation Mode", response)
+
 if __name__ == '__main__':
     unittest.main()
