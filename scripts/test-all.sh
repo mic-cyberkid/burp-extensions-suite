@@ -20,5 +20,6 @@ python3 extensions/graphql-auditor/tests/test_graphql_logic.py
 python3 extensions/api-miner/tests/test_api_miner_logic.py
 python3 extensions/subdomain-hunter/tests/test_takeover_logic.py
 python3 extensions/jwt-idor-tester/tests/test_jwt_idor_logic.py
+python3 extensions/jules-ai-assistant/tests/test_jules_ai_logic.py
 
 echo "All tests passed successfully!"
