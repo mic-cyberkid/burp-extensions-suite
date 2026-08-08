@@ -1,0 +1,573 @@
+{
+  "scan_metadata": {
+    "timestamp": "2026-08-08 00:01:22",
+    "target_scope": [
+      "api.targetapp.com",
+      "localhost",
+      "127.0.0.1"
+    ],
+    "total_requests": 8
+  },
+  "vulnerabilities": [
+    {
+      "id": "FINDING-001",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/public/health",
+      "path": "http://127.0.0.1:5000/api/v1/public/health",
+      "method": "GET",
+      "context": "low_priv",
+      "severity": "CRITICAL",
+      "similarity_score": 1.0,
+      "score_details": {
+        "status_match": true,
+        "status_a": 200,
+        "status_b": 200,
+        "body_sim": 1.0,
+        "struct_sim": 1.0,
+        "len_diff_pct": 0.0,
+        "length_ok": true,
+        "composite_score": 1.0,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/public/health",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "74",
+          "Connection": "close"
+        },
+        "body": "{\"status\":\"healthy\",\"timestamp\":\"2023-10-27T12:00:00Z\",\"version\":\"1.0.0\"}\n"
+      },
+      "replayed_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/public/health",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "low_priv",
+          "Authorization": "Bearer TOKEN_USER_B",
+          "X-Tenant-ID": "tenant_002",
+          "Cookie": "session_id=sess_user_b"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "74",
+          "Connection": "close"
+        },
+        "body": "{\"status\":\"healthy\",\"timestamp\":\"2023-10-27T12:00:00Z\",\"version\":\"1.0.0\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-002",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/public/health",
+      "path": "http://127.0.0.1:5000/api/v1/public/health",
+      "method": "GET",
+      "context": "cross_tenant",
+      "severity": "CRITICAL",
+      "similarity_score": 1.0,
+      "score_details": {
+        "status_match": true,
+        "status_a": 200,
+        "status_b": 200,
+        "body_sim": 1.0,
+        "struct_sim": 1.0,
+        "len_diff_pct": 0.0,
+        "length_ok": true,
+        "composite_score": 1.0,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/public/health",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "74",
+          "Connection": "close"
+        },
+        "body": "{\"status\":\"healthy\",\"timestamp\":\"2023-10-27T12:00:00Z\",\"version\":\"1.0.0\"}\n"
+      },
+      "replayed_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/public/health",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "cross_tenant",
+          "Authorization": "Bearer TOKEN_USER_C",
+          "X-Tenant-ID": "tenant_003",
+          "Cookie": "session_id=sess_user_c"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "74",
+          "Connection": "close"
+        },
+        "body": "{\"status\":\"healthy\",\"timestamp\":\"2023-10-27T12:00:00Z\",\"version\":\"1.0.0\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-003",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/user/profile",
+      "path": "http://127.0.0.1:5000/api/v1/user/profile",
+      "method": "GET",
+      "context": "low_priv",
+      "severity": "INFO / ENFORCED",
+      "similarity_score": 0.1768,
+      "score_details": {
+        "status_match": false,
+        "status_a": 200,
+        "status_b": 403,
+        "body_sim": 0.35359116022099446,
+        "struct_sim": 0.0,
+        "len_diff_pct": 0.24271844660194175,
+        "length_ok": false,
+        "composite_score": 0.17679558011049723,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/user/profile",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "103",
+          "Connection": "close"
+        },
+        "body": "{\"email\":\"admin@targetapp.com\",\"role\":\"Administrator\",\"tenant\":\"tenant_001\",\"username\":\"admin_user_a\"}\n"
+      },
+      "replayed_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/user/profile",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "low_priv",
+          "Authorization": "Bearer TOKEN_USER_B",
+          "X-Tenant-ID": "tenant_002",
+          "Cookie": "session_id=sess_user_b"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 403,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "78",
+          "Connection": "close"
+        },
+        "body": "{\"error\":\"Forbidden\",\"message\":\"Access denied. Requires Administrator role.\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-004",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/user/profile",
+      "path": "http://127.0.0.1:5000/api/v1/user/profile",
+      "method": "GET",
+      "context": "cross_tenant",
+      "severity": "INFO / ENFORCED",
+      "similarity_score": 0.1768,
+      "score_details": {
+        "status_match": false,
+        "status_a": 200,
+        "status_b": 403,
+        "body_sim": 0.35359116022099446,
+        "struct_sim": 0.0,
+        "len_diff_pct": 0.24271844660194175,
+        "length_ok": false,
+        "composite_score": 0.17679558011049723,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/user/profile",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "103",
+          "Connection": "close"
+        },
+        "body": "{\"email\":\"admin@targetapp.com\",\"role\":\"Administrator\",\"tenant\":\"tenant_001\",\"username\":\"admin_user_a\"}\n"
+      },
+      "replayed_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/user/profile",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "cross_tenant",
+          "Authorization": "Bearer TOKEN_USER_C",
+          "X-Tenant-ID": "tenant_003",
+          "Cookie": "session_id=sess_user_c"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 403,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "78",
+          "Connection": "close"
+        },
+        "body": "{\"error\":\"Forbidden\",\"message\":\"Access denied. Requires Administrator role.\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-005",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+      "path": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+      "method": "GET",
+      "context": "low_priv",
+      "severity": "CRITICAL",
+      "similarity_score": 1.0,
+      "score_details": {
+        "status_match": true,
+        "status_a": 200,
+        "status_b": 200,
+        "body_sim": 1.0,
+        "struct_sim": 1.0,
+        "len_diff_pct": 0.0,
+        "length_ok": true,
+        "composite_score": 1.0,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "208",
+          "Connection": "close"
+        },
+        "body": "{\"confidentiality\":\"STRICTLY PRIVATE\",\"content\":\"IDOR vulnerabilities are extremely dangerous.\",\"document_id\":\"doc_1001\",\"owner\":\"admin_user_a\",\"tenant_id\":\"tenant_001\",\"title\":\"Q3 Financial Plan & Secrets\"}\n"
+      },
+      "replayed_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "low_priv",
+          "Authorization": "Bearer TOKEN_USER_B",
+          "X-Tenant-ID": "tenant_002",
+          "Cookie": "session_id=sess_user_b"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "208",
+          "Connection": "close"
+        },
+        "body": "{\"confidentiality\":\"STRICTLY PRIVATE\",\"content\":\"IDOR vulnerabilities are extremely dangerous.\",\"document_id\":\"doc_1001\",\"owner\":\"admin_user_a\",\"tenant_id\":\"tenant_001\",\"title\":\"Q3 Financial Plan & Secrets\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-006",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+      "path": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+      "method": "GET",
+      "context": "cross_tenant",
+      "severity": "CRITICAL",
+      "similarity_score": 1.0,
+      "score_details": {
+        "status_match": true,
+        "status_a": 200,
+        "status_b": 200,
+        "body_sim": 1.0,
+        "struct_sim": 1.0,
+        "len_diff_pct": 0.0,
+        "length_ok": true,
+        "composite_score": 1.0,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "208",
+          "Connection": "close"
+        },
+        "body": "{\"confidentiality\":\"STRICTLY PRIVATE\",\"content\":\"IDOR vulnerabilities are extremely dangerous.\",\"document_id\":\"doc_1001\",\"owner\":\"admin_user_a\",\"tenant_id\":\"tenant_001\",\"title\":\"Q3 Financial Plan & Secrets\"}\n"
+      },
+      "replayed_request": {
+        "method": "GET",
+        "url": "http://127.0.0.1:5000/api/v1/documents/doc_1001",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "cross_tenant",
+          "Authorization": "Bearer TOKEN_USER_C",
+          "X-Tenant-ID": "tenant_003",
+          "Cookie": "session_id=sess_user_c"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "208",
+          "Connection": "close"
+        },
+        "body": "{\"confidentiality\":\"STRICTLY PRIVATE\",\"content\":\"IDOR vulnerabilities are extremely dangerous.\",\"document_id\":\"doc_1001\",\"owner\":\"admin_user_a\",\"tenant_id\":\"tenant_001\",\"title\":\"Q3 Financial Plan & Secrets\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-007",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/admin/delete",
+      "path": "http://127.0.0.1:5000/api/v1/admin/delete",
+      "method": "POST",
+      "context": "low_priv",
+      "severity": "CRITICAL",
+      "similarity_score": 0.9928,
+      "score_details": {
+        "status_match": true,
+        "status_a": 200,
+        "status_b": 200,
+        "body_sim": 0.9856115107913669,
+        "struct_sim": 1.0,
+        "len_diff_pct": 0.0,
+        "length_ok": true,
+        "composite_score": 0.9928057553956835,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5000/api/v1/admin/delete",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "139",
+          "Connection": "close"
+        },
+        "body": "{\"action\":\"delete_all_logs\",\"message\":\"Database logs have been permanently deleted by User A.\",\"requested_by\":\"User A\",\"status\":\"success\"}\n"
+      },
+      "replayed_request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5000/api/v1/admin/delete",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "low_priv",
+          "Authorization": "Bearer TOKEN_USER_B",
+          "X-Tenant-ID": "tenant_002",
+          "Cookie": "session_id=sess_user_b"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "139",
+          "Connection": "close"
+        },
+        "body": "{\"action\":\"delete_all_logs\",\"message\":\"Database logs have been permanently deleted by User B.\",\"requested_by\":\"User B\",\"status\":\"success\"}\n"
+      }
+    },
+    {
+      "id": "FINDING-008",
+      "timestamp": "2026-08-08 00:01:17",
+      "endpoint": "http://127.0.0.1:5000/api/v1/admin/delete",
+      "path": "http://127.0.0.1:5000/api/v1/admin/delete",
+      "method": "POST",
+      "context": "cross_tenant",
+      "severity": "CRITICAL",
+      "similarity_score": 0.9928,
+      "score_details": {
+        "status_match": true,
+        "status_a": 200,
+        "status_b": 200,
+        "body_sim": 0.9856115107913669,
+        "struct_sim": 1.0,
+        "len_diff_pct": 0.0,
+        "length_ok": true,
+        "composite_score": 0.9928057553956835,
+        "is_json": true
+      },
+      "original_request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5000/api/v1/admin/delete",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive"
+        },
+        "body": ""
+      },
+      "original_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "139",
+          "Connection": "close"
+        },
+        "body": "{\"action\":\"delete_all_logs\",\"message\":\"Database logs have been permanently deleted by User A.\",\"requested_by\":\"User A\",\"status\":\"success\"}\n"
+      },
+      "replayed_request": {
+        "method": "POST",
+        "url": "http://127.0.0.1:5000/api/v1/admin/delete",
+        "headers": {
+          "Host": "127.0.0.1:5000",
+          "User-Agent": "curl/8.5.0",
+          "Accept": "*/*",
+          "Proxy-Connection": "Keep-Alive",
+          "X-AuthDiff-Replayed": "1",
+          "X-AuthDiff-Context": "cross_tenant",
+          "Authorization": "Bearer TOKEN_USER_C",
+          "X-Tenant-ID": "tenant_003",
+          "Cookie": "session_id=sess_user_c"
+        },
+        "body": ""
+      },
+      "replayed_response": {
+        "status_code": 200,
+        "headers": {
+          "Server": "Werkzeug/3.1.8 Python/3.12.13",
+          "Date": "Sat, 08 Aug 2026 00:01:17 GMT",
+          "Content-Type": "application/json",
+          "Content-Length": "139",
+          "Connection": "close"
+        },
+        "body": "{\"action\":\"delete_all_logs\",\"message\":\"Database logs have been permanently deleted by User C.\",\"requested_by\":\"User C\",\"status\":\"success\"}\n"
+      }
+    }
+  ]
+}
