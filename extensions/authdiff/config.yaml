@@ -1,0 +1,29 @@
+config:
+  scope_domains:
+    - "api.targetapp.com"
+    - "localhost"
+    - "127.0.0.1"
+  ignore_extensions:
+    - ".js"
+    - ".css"
+    - ".png"
+    - ".jpg"
+    - ".svg"
+    - ".woff2"
+
+context_base (User A - Admin):
+  # Original traffic captured via browser/proxy
+
+context_low_priv (User B - Low Priv Member):
+  headers:
+    Authorization: "Bearer TOKEN_USER_B"
+    X-Tenant-ID: "tenant_002"
+  cookies:
+    session_id: "sess_user_b"
+
+context_cross_tenant (User C - Other Org Member):
+  headers:
+    Authorization: "Bearer TOKEN_USER_C"
+    X-Tenant-ID: "tenant_003"
+  cookies:
+    session_id: "sess_user_c"
