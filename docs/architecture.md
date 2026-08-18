@@ -20,6 +20,7 @@ graph TD
         AM[API Miner]
         SH[Subdomain Hunter]
         JI[JWT IDOR Tester]
+        JA[Jules AI]
     end
 
     subgraph "Montoya API (Java)"
@@ -42,6 +43,7 @@ graph TD
     Burp --> AM
     Burp --> SH
     Burp --> JI
+    Burp --> JA
 
     PS -.-> RG
     AA -.-> RG
