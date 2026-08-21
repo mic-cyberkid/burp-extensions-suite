@@ -211,44 +211,71 @@ class LogicBreakerEngine(object):
     @staticmethod
     def extract_dynamic_tokens(response_str):
         """
-        Extracts dynamic tokens (e.g., CSRF tokens, session IDs, bearer tokens, state params)
-        from HTTP response headers or body.
+        Extracts dynamic tokens (e.g., Bearer/JWT tokens, CSRF tokens, session IDs, state params)
+        from HTTP response headers and JSON/HTML response body.
         """
         tokens = {}
         if not response_str:
             return tokens
 
-        # 1. Check JSON body tokens
         parts = response_str.split('\r\n\r\n', 1)
         if len(parts) < 2:
             parts = response_str.split('\n\n', 1)
 
+        headers = parts[0] if len(parts) > 0 else ''
         body = parts[1] if len(parts) > 1 else ''
+
+        # 1. Parse JSON body tokens
         if body.strip().startswith('{'):
             try:
                 data = json.loads(body)
                 if isinstance(data, dict):
                     for k, v in data.items():
-                        if isinstance(v, (str, int, float)) and any(t in k.lower() for t in ['token', 'csrf', 'state', 'session', 'auth']):
-                            tokens[k] = str(v)
+                        if isinstance(v, (str, int, float)):
+                            k_lower = k.lower()
+                            if k_lower in ['access_token', 'token', 'id_token', 'bearer', 'jwt', 'api_key', 'session', 'csrf_token', '_csrf', 'authenticity_token', 'state']:
+                                tokens[k] = str(v)
+                                if k_lower in ['access_token', 'token', 'id_token', 'bearer', 'jwt']:
+                                    tokens['__bearer_token__'] = str(v)
             except Exception:
                 pass
 
-        # 2. Regex search for token parameters in response body or headers
+        # 2. Parse Response Headers (Authorization, Set-Cookie, X-CSRF-Token, etc.)
+        for line in headers.splitlines():
+            if ':' in line:
+                h_name, h_val = line.split(':', 1)
+                h_name = h_name.strip().lower()
+                h_val = h_val.strip()
+
+                if h_name == 'authorization':
+                    if h_val.lower().startswith('bearer '):
+                        b_val = h_val[7:].strip()
+                        tokens['access_token'] = b_val
+                        tokens['__bearer_token__'] = b_val
+                    else:
+                        tokens['authorization'] = h_val
+                elif h_name == 'set-cookie':
+                    cookie_pair = h_val.split(';', 1)[0].strip()
+                    if '=' in cookie_pair:
+                        ck, cv = cookie_pair.split('=', 1)
+                        tokens[ck] = cv
+                        tokens['cookie:' + ck] = cv
+                elif 'csrf' in h_name or 'xsrf' in h_name or 'token' in h_name:
+                    tokens[h_name] = h_val
+
+        # 3. Regex search in body (for HTML forms or embedded scripts)
         patterns = [
             (r'name=["\'](?:csrf[-_]?token|_csrf|authenticity_token)["\']\s+value=["\']([^"\']+)["\']', 'csrf_token'),
-            (r'["\'](?:csrf[-_]?token|access[-_]?token|auth[-_]?token|token)["\']\s*:\s*["\']([^"\']+)["\']', 'token'),
-            (r'Set-Cookie:\s*([^=;\s]+)=([^;\r\n]+)', 'cookie')
+            (r'["\'](?:access[-_]?token|auth[-_]?token|bearer)["\']\s*:\s*["\']([^"\']+)["\']', 'access_token'),
         ]
-
         for pattern, default_key in patterns:
-            matches = re.findall(pattern, response_str, re.IGNORECASE)
+            matches = re.findall(pattern, body, re.IGNORECASE)
             for m in matches:
-                if isinstance(m, tuple):
-                    if len(m) == 2:
-                        tokens[m[0]] = m[1]
-                else:
-                    tokens[default_key] = m
+                val = m[1] if isinstance(m, tuple) and len(m) == 2 else m
+                key = m[0] if isinstance(m, tuple) and len(m) == 2 else default_key
+                tokens[key] = val
+                if key.lower() in ['access_token', 'id_token', 'auth_token', 'bearer']:
+                    tokens['__bearer_token__'] = val
 
         return tokens
 
@@ -256,39 +283,99 @@ class LogicBreakerEngine(object):
     def substitute_tokens(request_str, token_map):
         """
         Substitutes dynamic token values into raw HTTP request string.
+        Targeted replacement for Authorization: Bearer, Cookies, CSRF headers,
+        query parameters, and JSON request body parameters.
         """
         if not request_str or not token_map:
             return request_str
 
-        modified = request_str
-        for token_name, token_val in token_map.items():
-            if not token_name or not token_val:
+        parts = request_str.split('\r\n\r\n', 1)
+        delimiter = '\r\n\r\n'
+        if len(parts) < 2:
+            parts = request_str.split('\n\n', 1)
+            delimiter = '\n\n'
+
+        headers_part = parts[0] if len(parts) > 0 else ''
+        body_part = parts[1] if len(parts) > 1 else ''
+
+        lines = headers_part.splitlines()
+        if not lines:
+            return request_str
+
+        first_line = lines[0]
+        header_lines = lines[1:]
+
+        # 1. Handle targeted Authorization Bearer replacement
+        bearer_val = token_map.get('__bearer_token__') or token_map.get('access_token') or token_map.get('token') or token_map.get('bearer')
+        new_header_lines = []
+
+        for line in header_lines:
+            if ':' in line:
+                h_k, h_v = line.split(':', 1)
+                h_k_lower = h_k.strip().lower()
+
+                if h_k_lower == 'authorization' and bearer_val:
+                    if h_v.strip().lower().startswith('bearer '):
+                        new_header_lines.append(h_k + ": Bearer " + str(bearer_val))
+                    else:
+                        new_header_lines.append(h_k + ": " + str(bearer_val))
+                    continue
+
+                if h_k_lower in token_map:
+                    new_header_lines.append(h_k + ": " + str(token_map[h_k_lower]))
+                    continue
+
+                # Handle Cookie header targeted updates
+                if h_k_lower == 'cookie':
+                    cookie_pairs = [p.strip() for p in h_v.split(';') if p.strip()]
+                    updated_pairs = []
+                    for pair in cookie_pairs:
+                        if '=' in pair:
+                            ck, cv = pair.split('=', 1)
+                            ck_clean = ck.strip()
+                            if ck_clean in token_map:
+                                updated_pairs.append(ck_clean + "=" + str(token_map[ck_clean]))
+                            elif ('cookie:' + ck_clean) in token_map:
+                                updated_pairs.append(ck_clean + "=" + str(token_map['cookie:' + ck_clean]))
+                            else:
+                                updated_pairs.append(pair)
+                        else:
+                            updated_pairs.append(pair)
+                    new_header_lines.append(h_k + ": " + "; ".join(updated_pairs))
+                    continue
+
+            new_header_lines.append(line)
+
+        # 2. Substitute in query params on first line
+        modified_first_line = first_line
+        for k, v in token_map.items():
+            if not k or not v or k.startswith('__') or k.startswith('cookie:'):
                 continue
+            pattern = re.escape(k) + r'=[^&\s]*'
+            replacement = k + '=' + str(v)
+            modified_first_line = re.sub(pattern, replacement, modified_first_line)
 
-            # Replace token in headers or query parameters (e.g. csrf_token=XXX)
-            pattern = re.escape(token_name) + r'=[^&\s\r\n]*'
-            replacement = token_name + '=' + str(token_val)
-            modified = re.sub(pattern, replacement, modified)
+        final_headers = "\r\n".join([modified_first_line] + new_header_lines)
 
-            # Replace token in JSON body
-            parts = modified.split('\r\n\r\n', 1)
-            delimiter = '\r\n\r\n'
-            if len(parts) < 2:
-                parts = modified.split('\n\n', 1)
-                delimiter = '\n\n'
+        # 3. Substitute in JSON body
+        modified_body = body_part
+        if body_part.strip().startswith('{'):
+            try:
+                jdata = json.loads(body_part)
+                if isinstance(jdata, dict):
+                    updated = False
+                    for k, v in token_map.items():
+                        if k in jdata and not k.startswith('__') and not k.startswith('cookie:'):
+                            jdata[k] = v
+                            updated = True
+                    if updated:
+                        modified_body = json.dumps(jdata)
+            except Exception:
+                pass
 
-            if len(parts) == 2:
-                headers, body = parts[0], parts[1]
-                if body.strip().startswith('{'):
-                    try:
-                        jdata = json.loads(body)
-                        if isinstance(jdata, dict) and token_name in jdata:
-                            jdata[token_name] = token_val
-                            modified = headers + delimiter + json.dumps(jdata)
-                    except Exception:
-                        pass
-
-        return modified
+        if modified_body:
+            return final_headers + delimiter + modified_body
+        return final_headers + delimiter
 
 
 # ------------------------------------------------------------------------------

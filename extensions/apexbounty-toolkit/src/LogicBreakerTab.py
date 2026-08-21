@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 LogicBreakerTab.py - Tab 1: State-Aware Logic Breaker
-Implements sequence recorder, table pruning, token substitution,
+Implements sequence recorder, table pruning, auth generator designation, thread-safe token substitution,
 permutation attack generation, baseline replay, and export/import.
 """
 
@@ -19,18 +19,18 @@ from ApexToolkitLogic import LogicBreakerEngine, log_info, log_error, save_setti
 
 class SequenceTableModel(DefaultTableModel):
     """
-    Custom TableModel to render 'Include' column as a native JCheckBox.
+    Custom TableModel to render 'Include' and 'Auth Generator' columns as native JCheckBoxes.
     """
     def __init__(self, headers, row_count):
         DefaultTableModel.__init__(self, headers, row_count)
 
     def getColumnClass(self, col):
-        if col == 1:
+        if col in (1, 2):  # 'Include' and 'Auth Generator' columns
             return Boolean
         return String
 
     def isCellEditable(self, row, col):
-        return col == 1
+        return col in (1, 2)
 
 
 class LogicBreakerTab(object):
@@ -42,13 +42,13 @@ class LogicBreakerTab(object):
         self.baseline_requests = []  # active baseline list
         self.is_recording = False
         self.is_attacking = False
+        self.auth_lock = threading.Lock()  # Thread lock for concurrent auth token refresh
 
         self._init_ui()
 
     def _init_ui(self):
         self.panel = JPanel(BorderLayout())
 
-        # Top Controls Panel
         top_panel = JPanel(BorderLayout())
 
         # Bar 1: Controls & Recording
@@ -101,11 +101,12 @@ class LogicBreakerTab(object):
         top_panel.add(ctrl_bar2, BorderLayout.SOUTH)
 
         # Sequence Steps Table
-        headers = ["Step #", "Include", "Method", "Host", "Path"]
+        headers = ["Step #", "Include", "Auth Generator", "Method", "Host", "Path"]
         self.seq_table_model = SequenceTableModel(headers, 0)
         self.seq_table = JTable(self.seq_table_model)
-        self.seq_table.getColumnModel().getColumn(0).setPreferredWidth(60)
-        self.seq_table.getColumnModel().getColumn(1).setPreferredWidth(70)
+        self.seq_table.getColumnModel().getColumn(0).setPreferredWidth(50)
+        self.seq_table.getColumnModel().getColumn(1).setPreferredWidth(60)
+        self.seq_table.getColumnModel().getColumn(2).setPreferredWidth(100)
 
         seq_scroll = JScrollPane(self.seq_table)
 
@@ -173,6 +174,8 @@ class LogicBreakerTab(object):
         use_https = (protocol.lower() == "https")
         req_str = self.helpers.bytesToString(req_bytes)
 
+        is_auth = any(term in path.lower() for term in ['login', 'auth', 'token', 'oauth'])
+
         step_dict = {
             'http_service': http_service,
             'request_bytes': req_bytes,
@@ -183,13 +186,14 @@ class LogicBreakerTab(object):
             'use_https': use_https,
             'path': path,
             'name': method + " " + path,
-            'include': True
+            'include': True,
+            'is_auth_generator': is_auth
         }
         self.recorded_requests.append(step_dict)
         step_num = len(self.recorded_requests)
 
         def update_ui():
-            self.seq_table_model.addRow([str(step_num), True, method, host, path])
+            self.seq_table_model.addRow([str(step_num), True, is_auth, method, host, path])
             self._update_status_label()
 
         SwingUtilities.invokeLater(update_ui)
@@ -208,6 +212,8 @@ class LogicBreakerTab(object):
         path = url.getPath() if url else "/"
         req_str = self.helpers.bytesToString(request_bytes)
 
+        is_auth = any(term in path.lower() for term in ['login', 'auth', 'token', 'oauth'])
+
         step_dict = {
             'http_service': http_service,
             'request_bytes': request_bytes,
@@ -218,21 +224,19 @@ class LogicBreakerTab(object):
             'use_https': use_https,
             'path': path,
             'name': method + " " + path,
-            'include': True
+            'include': True,
+            'is_auth_generator': is_auth
         }
         self.recorded_requests.append(step_dict)
         step_num = len(self.recorded_requests)
 
         def update_ui():
-            self.seq_table_model.addRow([str(step_num), True, method, host, path])
+            self.seq_table_model.addRow([str(step_num), True, is_auth, method, host, path])
             self._update_status_label()
 
         SwingUtilities.invokeLater(update_ui)
 
     def _on_load_history(self, event):
-        """
-        Imports recent proxy history requests into the sequence table.
-        """
         def load_thread():
             try:
                 history = self.callbacks.getProxyHistory()
@@ -265,6 +269,8 @@ class LogicBreakerTab(object):
                     use_https = (protocol.lower() == "https")
                     req_str = self.helpers.bytesToString(req_bytes)
 
+                    is_auth = any(term in path.lower() for term in ['login', 'auth', 'token', 'oauth'])
+
                     step_dict = {
                         'http_service': http_service,
                         'request_bytes': req_bytes,
@@ -275,7 +281,8 @@ class LogicBreakerTab(object):
                         'use_https': use_https,
                         'path': path,
                         'name': method + " " + path,
-                        'include': True
+                        'include': True,
+                        'is_auth_generator': is_auth
                     }
                     self.recorded_requests.append(step_dict)
                     count += 1
@@ -299,7 +306,6 @@ class LogicBreakerTab(object):
         if not selected_rows:
             return
 
-        # Delete in reverse index order
         rows_to_remove = sorted(list(selected_rows), reverse=True)
         for r in rows_to_remove:
             if 0 <= r < len(self.recorded_requests):
@@ -316,11 +322,12 @@ class LogicBreakerTab(object):
         self._update_status_label()
 
     def _on_set_baseline(self, event):
-        # Sync 'include' state from table check boxes
         for row_idx in range(self.seq_table_model.getRowCount()):
             inc_val = self.seq_table_model.getValueAt(row_idx, 1)
+            auth_val = self.seq_table_model.getValueAt(row_idx, 2)
             if row_idx < len(self.recorded_requests):
                 self.recorded_requests[row_idx]['include'] = bool(inc_val)
+                self.recorded_requests[row_idx]['is_auth_generator'] = bool(auth_val)
 
         self.baseline_requests = [step for step in self.recorded_requests if step.get('include', True)]
         self._update_status_label()
@@ -354,7 +361,6 @@ class LogicBreakerTab(object):
                 imported = LogicBreakerEngine.import_sequence_from_json(content)
                 if imported:
                     for step in imported:
-                        # Reconstruct http service if possible
                         service = self.helpers.buildHttpService(
                             step.get('host', ''),
                             step.get('port', 80),
@@ -370,6 +376,12 @@ class LogicBreakerTab(object):
             except Exception as ex:
                 log_error(self.callbacks, "Import failed", ex)
 
+    def _get_auth_generator_step(self, sequence):
+        for step in sequence:
+            if step.get('is_auth_generator', False):
+                return step
+        return sequence[0] if sequence else None
+
     def _on_replay_baseline(self, event):
         sequence_to_run = self.baseline_requests if self.baseline_requests else [s for s in self.recorded_requests if s.get('include', True)]
         if not sequence_to_run:
@@ -379,6 +391,19 @@ class LogicBreakerTab(object):
         def replay_thread():
             token_map = {}
             results_summary = []
+
+            # Pre-flight thread-safe Auth Generator refresh
+            if self.chk_auto_tokens.isSelected():
+                auth_step = self._get_auth_generator_step(sequence_to_run)
+                if auth_step:
+                    with self.auth_lock:
+                        try:
+                            auth_resp = self.callbacks.makeHttpRequest(auth_step.get('http_service'), self.helpers.stringToBytes(auth_step.get('request_str', '')))
+                            if auth_resp and auth_resp.getResponse():
+                                auth_resp_str = self.helpers.bytesToString(auth_resp.getResponse())
+                                token_map.update(LogicBreakerEngine.extract_dynamic_tokens(auth_resp_str))
+                        except Exception as ex:
+                            log_error(self.callbacks, "Auth Generator pre-flight refresh error", ex)
 
             for idx, step in enumerate(sequence_to_run):
                 service = step.get('http_service')
@@ -443,6 +468,19 @@ class LogicBreakerTab(object):
                 final_length = "N/A"
                 token_map = {}
 
+                # Pre-flight Auth Refresh for permutation sequence
+                if self.chk_auto_tokens.isSelected():
+                    auth_step = self._get_auth_generator_step(sequence_to_run)
+                    if auth_step:
+                        with self.auth_lock:
+                            try:
+                                auth_resp = self.callbacks.makeHttpRequest(auth_step.get('http_service'), self.helpers.stringToBytes(auth_step.get('request_str', '')))
+                                if auth_resp and auth_resp.getResponse():
+                                    auth_resp_str = self.helpers.bytesToString(auth_resp.getResponse())
+                                    token_map.update(LogicBreakerEngine.extract_dynamic_tokens(auth_resp_str))
+                            except Exception as ex:
+                                log_error(self.callbacks, "Auth Generator attack pre-flight refresh error", ex)
+
                 for step in seq:
                     service = step.get('http_service')
                     req_str = step.get('request_str', '')
@@ -483,10 +521,11 @@ class LogicBreakerTab(object):
         self.seq_table_model.setRowCount(0)
         for idx, step in enumerate(self.recorded_requests):
             inc = step.get('include', True)
+            is_auth = step.get('is_auth_generator', False)
             method = step.get('method', 'GET')
             host = step.get('host', '')
             path = step.get('path', '/')
-            self.seq_table_model.addRow([str(idx + 1), inc, method, host, path])
+            self.seq_table_model.addRow([str(idx + 1), inc, is_auth, method, host, path])
 
     def _update_status_label(self):
         steps_cnt = len(self.recorded_requests)

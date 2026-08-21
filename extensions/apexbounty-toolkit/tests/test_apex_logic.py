@@ -91,24 +91,26 @@ class TestLogicBreakerEngine(unittest.TestCase):
             "HTTP/1.1 200 OK\r\n"
             "Set-Cookie: sessionid=xyz123secret; Path=/\r\n"
             "Content-Type: application/json\r\n\r\n"
-            '{"csrf_token": "token_abc_999", "status": "success"}'
+            '{"access_token": "token_abc_999", "csrf_token": "csrf_val_111", "status": "success"}'
         )
         tokens = LogicBreakerEngine.extract_dynamic_tokens(resp_str)
-        self.assertIn('csrf_token', tokens)
-        self.assertEqual(tokens['csrf_token'], 'token_abc_999')
+        self.assertIn('access_token', tokens)
+        self.assertEqual(tokens['access_token'], 'token_abc_999')
+        self.assertEqual(tokens['__bearer_token__'], 'token_abc_999')
         self.assertIn('sessionid', tokens)
-        self.assertEqual(tokens['sessionid'], 'xyz123secret')
 
         req_str = (
             "POST /api/checkout HTTP/1.1\r\n"
             "Host: example.com\r\n"
+            "Authorization: Bearer old_stale_token\r\n"
             "Cookie: sessionid=old_sess\r\n"
             "Content-Type: application/json\r\n\r\n"
             '{"csrf_token": "old_token", "amount": 100}'
         )
         substituted = LogicBreakerEngine.substitute_tokens(req_str, tokens)
-        self.assertIn('token_abc_999', substituted)
+        self.assertIn('Authorization: Bearer token_abc_999', substituted)
         self.assertIn('sessionid=xyz123secret', substituted)
+        self.assertIn('"csrf_token": "csrf_val_111"', substituted)
 
 
 class TestLLMFuzzerEngine(unittest.TestCase):
