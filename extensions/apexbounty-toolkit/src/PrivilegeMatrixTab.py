@@ -2,6 +2,7 @@
 """
 PrivilegeMatrixTab.py - Tab 4: Dynamic Privilege Matrix
 Automated BOLA/IDOR detection via background session replays across 4 configured roles.
+Includes target scope enforcement, method filtering, and thread-safe results logging.
 """
 
 import threading
@@ -17,26 +18,36 @@ from ApexToolkitLogic import PrivilegeMatrixEngine
 class StatusColorCellRenderer(DefaultTableCellRenderer):
     """
     Renders role status columns with color codes:
-    Green for 200 OK, Red for 401/403, Yellow for Redirects, Orange for 500s.
+    Green for 200 OK, Red for 401/403, Yellow for Redirects, Orange for 500s/Errors.
     """
     def getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, column):
         cell = DefaultTableCellRenderer.getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, column)
 
-        # Apply custom coloring to role columns (Admin, User A, User B, Unauth)
         val_str = str(value) if value is not None else ""
-        if not isSelected and column >= 2: # Role status columns
-            if "200" in val_str or "201" in val_str or "204" in val_str:
-                cell.setBackground(Color(200, 245, 200)) # Soft Green
-                cell.setForeground(Color.BLACK)
-            elif "401" in val_str or "403" in val_str:
-                cell.setBackground(Color(255, 210, 210)) # Soft Red
-                cell.setForeground(Color.BLACK)
-            elif "301" in val_str or "302" in val_str:
-                cell.setBackground(Color(255, 255, 200)) # Soft Yellow
-                cell.setForeground(Color.BLACK)
-            elif "500" in val_str or "502" in val_str:
-                cell.setBackground(Color(255, 220, 180)) # Soft Orange
-                cell.setForeground(Color.BLACK)
+        if not isSelected:
+            if column >= 2 and column <= 5: # Role status columns
+                if any(code in val_str for code in ["200", "201", "204"]):
+                    cell.setBackground(Color(200, 245, 200)) # Soft Green
+                    cell.setForeground(Color.BLACK)
+                elif any(code in val_str for code in ["401", "403"]):
+                    cell.setBackground(Color(255, 210, 210)) # Soft Red
+                    cell.setForeground(Color.BLACK)
+                elif any(code in val_str for code in ["301", "302"]):
+                    cell.setBackground(Color(255, 255, 200)) # Soft Yellow
+                    cell.setForeground(Color.BLACK)
+                elif any(code in val_str for code in ["500", "502", "ERR", "Error"]):
+                    cell.setBackground(Color(255, 220, 180)) # Soft Orange
+                    cell.setForeground(Color.BLACK)
+                else:
+                    cell.setBackground(Color.WHITE)
+                    cell.setForeground(Color.BLACK)
+            elif column == 6: # Flagged column
+                if "FLAGGED" in val_str:
+                    cell.setBackground(Color(255, 200, 200)) # Soft Red / Highlight
+                    cell.setForeground(Color.BLACK)
+                else:
+                    cell.setBackground(Color.WHITE)
+                    cell.setForeground(Color.BLACK)
             else:
                 cell.setBackground(Color.WHITE)
                 cell.setForeground(Color.BLACK)
@@ -49,6 +60,7 @@ class PrivilegeMatrixTab(object):
         self.callbacks = callbacks
         self.helpers = helpers
         self.is_enabled = False
+        self.records_lock = threading.Lock()
 
         self.matrix_records = [] # stores dicts with request/response info for each role
 
@@ -67,11 +79,15 @@ class PrivilegeMatrixTab(object):
             lbl_title.setFont(font.deriveFont(font.getStyle() | 1, 14.0))
 
         self.chk_enable = JCheckBox("Enable Background Matrix Replay", False, actionPerformed=self._on_toggle_enabled)
+        self.chk_scope_only = JCheckBox("In-Scope Only", True)
+        self.chk_allow_state_changing = JCheckBox("Allow State-Changing Methods (POST/PUT/DELETE)", False)
         self.btn_clear = JButton("Clear Matrix Log", actionPerformed=self._on_clear_log)
 
         control_panel.add(lbl_title)
         control_panel.add(JSeparator(1))
         control_panel.add(self.chk_enable)
+        control_panel.add(self.chk_scope_only)
+        control_panel.add(self.chk_allow_state_changing)
         control_panel.add(self.btn_clear)
 
         # Role Header Configuration Grid (4 roles: Admin, User A, User B, Unauth)
@@ -93,11 +109,11 @@ class PrivilegeMatrixTab(object):
 
         # Center Section: Matrix Results Table + Details Viewers
         self.matrix_table_model = DefaultTableModel(
-            ["Method", "Path / Endpoint", "Admin Status", "User A Status", "User B Status", "Unauth Status"], 0
+            ["Method", "Path / Endpoint", "Admin Status", "User A Status", "User B Status", "Unauth Status", "Flagged"], 0
         )
         self.matrix_table = JTable(self.matrix_table_model)
         renderer = StatusColorCellRenderer()
-        for c in range(6):
+        for c in range(7):
             self.matrix_table.getColumnModel().getColumn(c).setCellRenderer(renderer)
 
         self.matrix_table.getSelectionModel().addListSelectionListener(self._on_row_selected)
@@ -134,11 +150,13 @@ class PrivilegeMatrixTab(object):
 
     def _on_clear_log(self, event):
         self.matrix_table_model.setRowCount(0)
-        self.matrix_records = []
+        with self.records_lock:
+            self.matrix_records = []
 
     def handle_proxy_request(self, message_info):
         """
         Called when a request passes through Burp Proxy.
+        Enforces target scope check and method filtering before execution.
         """
         if not self.is_enabled:
             return
@@ -154,6 +172,17 @@ class PrivilegeMatrixTab(object):
         if not url:
             return
 
+        # P0 Scope Check Gate
+        if self.chk_scope_only.isSelected():
+            if not self.callbacks.isInScope(url):
+                return
+
+        method = req_info.getMethod()
+        # P0 Method / Idempotency Filter
+        if method and method.upper() not in ['GET', 'HEAD', 'OPTIONS']:
+            if not self.chk_allow_state_changing.isSelected():
+                return
+
         path = url.getPath()
         # Filter static assets
         if any(path.endswith(ext) for ext in ['.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2']):
@@ -162,7 +191,7 @@ class PrivilegeMatrixTab(object):
         # Spawn background thread to replay across roles
         t = threading.Thread(
             target=self._replay_matrix_thread,
-            args=(http_service, req_bytes, req_info.getMethod(), path)
+            args=(http_service, req_bytes, method, path)
         )
         t.daemon = True
         t.start()
@@ -196,16 +225,29 @@ class PrivilegeMatrixTab(object):
                     role_responses[role_name] = None
                 role_statuses[role_name] = status_str
             except Exception as ex:
-                role_statuses[role_name] = "Err"
+                role_statuses[role_name] = "ERROR: " + str(ex)
                 role_responses[role_name] = None
+
+        # Flag BOLA anomaly: Admin = 20x and lower privilege role also = 20x
+        admin_status = role_statuses.get("Admin", "")
+        flag_str = "No"
+        if any(admin_status.startswith(code) for code in ["200", "201", "204"]):
+            for r_name in ["User A", "User B", "Unauth"]:
+                st = role_statuses.get(r_name, "")
+                if any(st.startswith(code) for code in ["200", "201", "204"]):
+                    flag_str = "FLAGGED (Potential BOLA)"
+                    break
 
         record = {
             'method': method,
             'path': path,
             'statuses': role_statuses,
-            'responses': role_responses
+            'responses': role_responses,
+            'flagged': flag_str
         }
-        self.matrix_records.append(record)
+
+        with self.records_lock:
+            self.matrix_records.append(record)
 
         def add_row():
             self.matrix_table_model.addRow([
@@ -214,7 +256,8 @@ class PrivilegeMatrixTab(object):
                 role_statuses.get("Admin", "N/A"),
                 role_statuses.get("User A", "N/A"),
                 role_statuses.get("User B", "N/A"),
-                role_statuses.get("Unauth", "N/A")
+                role_statuses.get("Unauth", "N/A"),
+                flag_str
             ])
 
         SwingUtilities.invokeLater(add_row)
@@ -223,8 +266,12 @@ class PrivilegeMatrixTab(object):
         if event.getValueIsAdjusting():
             return
         row = self.matrix_table.getSelectedRow()
-        if 0 <= row < len(self.matrix_records):
-            rec = self.matrix_records[row]
+        rec = None
+        with self.records_lock:
+            if 0 <= row < len(self.matrix_records):
+                rec = self.matrix_records[row]
+
+        if rec:
             responses = rec['responses']
             for role_name, editor in self.role_viewers.items():
                 resp_bytes = responses.get(role_name)

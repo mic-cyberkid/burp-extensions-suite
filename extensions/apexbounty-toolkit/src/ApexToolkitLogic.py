@@ -7,6 +7,30 @@ Compatible with Jython 2.7 and Python 3.x environments.
 import re
 import json
 
+try:
+    import urllib.parse as urllib_parse
+except ImportError:
+    import urllib as urllib_parse
+
+
+def _update_content_length(headers, new_body_len):
+    """
+    Updates or inserts Content-Length header in raw HTTP headers string.
+    """
+    lines = headers.splitlines()
+    cl_found = False
+    for i, line in enumerate(lines):
+        if line.lower().startswith('content-length:'):
+            lines[i] = "Content-Length: " + str(new_body_len)
+            cl_found = True
+            break
+    if not cl_found and lines:
+        lines.append("Content-Length: " + str(new_body_len))
+
+    delimiter = '\r\n' if '\r\n' in headers else '\n'
+    return delimiter.join(lines)
+
+
 class LogicBreakerEngine(object):
     """
     Engine for generating sequence permutations in multi-step workflows
@@ -17,26 +41,30 @@ class LogicBreakerEngine(object):
     def generate_permutations(sequence):
         """
         Given a sequence of requests (list of dicts or objects with 'id' and 'name'),
-        generates permutation test cases.
+        generates permutation test cases. Filtered to only include active/included steps.
         """
         if not sequence:
             return []
 
+        active_sequence = [item for item in sequence if item.get('included', True)]
+        if not active_sequence:
+            return []
+
         permutations = []
-        n = len(sequence)
+        n = len(active_sequence)
 
         # 1. Baseline sequence
         permutations.append({
             'name': 'Baseline (Full Sequence)',
-            'description': 'Executes full sequence as recorded (1..N)',
-            'sequence': list(sequence)
+            'description': 'Executes full active sequence as recorded (1..N)',
+            'sequence': list(active_sequence)
         })
 
         # 2. Skip single steps (Drop step i)
         for i in range(n):
-            seq_copy = [item for idx, item in enumerate(sequence) if idx != i]
+            seq_copy = [item for idx, item in enumerate(active_sequence) if idx != i]
             if seq_copy:
-                step_name = sequence[i].get('name', 'Step ' + str(i + 1)) if isinstance(sequence[i], dict) else 'Step ' + str(i + 1)
+                step_name = active_sequence[i].get('name', 'Step ' + str(i + 1)) if isinstance(active_sequence[i], dict) else 'Step ' + str(i + 1)
                 permutations.append({
                     'name': 'Drop ' + step_name,
                     'description': 'Drops step ' + str(i + 1) + ' (' + str(step_name) + ')',
@@ -45,8 +73,8 @@ class LogicBreakerEngine(object):
 
         # 3. Duplicate steps (Repeat step i)
         for i in range(n):
-            seq_copy = list(sequence[:i+1]) + [sequence[i]] + list(sequence[i+1:])
-            step_name = sequence[i].get('name', 'Step ' + str(i + 1)) if isinstance(sequence[i], dict) else 'Step ' + str(i + 1)
+            seq_copy = list(active_sequence[:i+1]) + [active_sequence[i]] + list(active_sequence[i+1:])
+            step_name = active_sequence[i].get('name', 'Step ' + str(i + 1)) if isinstance(active_sequence[i], dict) else 'Step ' + str(i + 1)
             permutations.append({
                 'name': 'Duplicate ' + step_name,
                 'description': 'Executes step ' + str(i + 1) + ' twice in succession',
@@ -58,13 +86,13 @@ class LogicBreakerEngine(object):
             permutations.append({
                 'name': 'Reverse Sequence',
                 'description': 'Executes sequence in reverse order (N..1)',
-                'sequence': list(reversed(sequence))
+                'sequence': list(reversed(active_sequence))
             })
 
         # 5. Swap adjacent steps
         if n > 1:
             for i in range(n - 1):
-                seq_copy = list(sequence)
+                seq_copy = list(active_sequence)
                 seq_copy[i], seq_copy[i+1] = seq_copy[i+1], seq_copy[i]
                 permutations.append({
                     'name': 'Swap Steps ' + str(i + 1) + ' & ' + str(i + 2),
@@ -77,7 +105,7 @@ class LogicBreakerEngine(object):
             permutations.append({
                 'name': 'Jump to Final Step',
                 'description': 'Executes only the final step without previous setup steps',
-                'sequence': [sequence[-1]]
+                'sequence': [active_sequence[-1]]
             })
 
         return permutations
@@ -88,6 +116,11 @@ class LLMFuzzerEngine(object):
     Engine for extracting request parameters, constructing LLM prompts,
     parsing generated payloads, and injecting payloads into requests.
     """
+
+    SENSITIVE_HEADERS = [
+        'authorization', 'cookie', 'x-api-key', 'api-key',
+        'x-auth-token', 'bearer', 'session', 'x-access-token'
+    ]
 
     @staticmethod
     def extract_parameters(request_str):
@@ -105,7 +138,7 @@ class LLMFuzzerEngine(object):
 
         first_line = lines[0] if lines else ''
 
-        # 1. Extract URL parameters from request line (e.g. GET /path?param1=val1&param2=val2 HTTP/1.1)
+        # 1. Extract URL parameters from request line
         url_match = re.search(r'^[A-Z]+\s+([^\s]+)', first_line)
         if url_match:
             full_path = url_match.group(1)
@@ -130,13 +163,25 @@ class LLMFuzzerEngine(object):
                 try:
                     json_obj = json.loads(body)
                     if isinstance(json_obj, dict):
-                        for k, v in json_obj.items():
-                            params.append({'name': str(k), 'value': str(v), 'type': 'JSON'})
+                        def _recurse_json(d, prefix=''):
+                            for k, v in d.items():
+                                param_key = (prefix + '.' + str(k)) if prefix else str(k)
+                                if isinstance(v, dict):
+                                    _recurse_json(v, param_key)
+                                elif isinstance(v, list):
+                                    params.append({'name': param_key, 'value': json.dumps(v), 'type': 'JSON'})
+                                else:
+                                    val_str = 'null' if v is None else ('true' if v is True else ('false' if v is False else str(v)))
+                                    params.append({'name': param_key, 'value': val_str, 'type': 'JSON'})
+                        _recurse_json(json_obj)
+                    elif isinstance(json_obj, list):
+                        for idx, item in enumerate(json_obj):
+                            params.append({'name': '[' + str(idx) + ']', 'value': json.dumps(item), 'type': 'JSON'})
                 except Exception:
                     pass
 
-            # 3. Try URL-encoded body (param1=val1&param2=val2)
-            if '=' in body and not body.startswith('{'):
+            # 3. Try URL-encoded body
+            if '=' in body and not body.startswith('{') and not body.startswith('['):
                 for pair in body.split('&'):
                     if '=' in pair:
                         k, v = pair.split('=', 1)
@@ -146,14 +191,35 @@ class LLMFuzzerEngine(object):
         return params
 
     @staticmethod
+    def redact_sensitive_headers(request_snippet):
+        """
+        Strips/redacts sensitive authentication headers from request snippets before passing to LLM.
+        """
+        if not request_snippet:
+            return request_snippet
+        lines = request_snippet.splitlines()
+        redacted_lines = []
+        for line in lines:
+            if ':' in line:
+                header_name = line.split(':', 1)[0].strip().lower()
+                if header_name in LLMFuzzerEngine.SENSITIVE_HEADERS:
+                    redacted_lines.append(line.split(':', 1)[0] + ": [REDACTED]")
+                    continue
+            redacted_lines.append(line)
+        delimiter = '\r\n' if '\r\n' in request_snippet else '\n'
+        return delimiter.join(redacted_lines)
+
+    @staticmethod
     def build_prompt(target_param, base_request_snippet=""):
         """
         Builds prompt for LLM API to request context-aware WAF bypass payloads.
+        Redacts authorization and sensitive headers from snippet.
         """
+        safe_snippet = LLMFuzzerEngine.redact_sensitive_headers(base_request_snippet[:400])
         prompt = (
             "You are an expert security researcher conducting authorized vulnerability testing.\n"
             "Generate 5 high-efficiency WAF bypass and security test payloads for parameter: '" + str(target_param) + "'.\n"
-            "Request context snippet:\n" + str(base_request_snippet[:300]) + "\n\n"
+            "Request context snippet:\n" + safe_snippet + "\n\n"
             "Return ONLY a JSON array of string payloads, like:\n"
             "[\"payload1\", \"payload2\", \"payload3\", \"payload4\", \"payload5\"]"
         )
@@ -162,13 +228,35 @@ class LLMFuzzerEngine(object):
     @staticmethod
     def parse_llm_payloads(llm_response_text):
         """
-        Parses LLM response to extract payload strings.
+        Parses LLM response to extract payload strings cleanly.
+        Supports structured JSON, code-fenced JSON, and line fallback parsing.
         """
         if not llm_response_text:
             return []
 
-        # Try JSON array extraction first
-        json_match = re.search(r'\[\s*".*?"\s*\]', llm_response_text, re.DOTALL)
+        text = llm_response_text.strip()
+        # Remove markdown code fences if present
+        if text.startswith('```'):
+            lines = text.splitlines()
+            if len(lines) >= 2 and lines[-1].strip().startswith('```'):
+                text = '\n'.join(lines[1:-1]).strip()
+            elif len(lines) >= 1:
+                text = '\n'.join(lines[1:]).strip()
+            if text.lower().startswith('json'):
+                text = text[4:].strip()
+
+        # 1. Try direct JSON parse
+        try:
+            payloads = json.loads(text)
+            if isinstance(payloads, list):
+                return [str(p) for p in payloads]
+            elif isinstance(payloads, dict) and 'payloads' in payloads:
+                return [str(p) for p in payloads['payloads']]
+        except Exception:
+            pass
+
+        # 2. Try JSON array extraction via regex
+        json_match = re.search(r'\[\s*".*?"\s*\]', text, re.DOTALL)
         if json_match:
             try:
                 payloads = json.loads(json_match.group(0))
@@ -177,11 +265,10 @@ class LLMFuzzerEngine(object):
             except Exception:
                 pass
 
-        # Fallback: line-by-line parsing
-        lines = [line.strip() for line in llm_response_text.splitlines() if line.strip()]
+        # 3. Fallback: line-by-line parsing
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
         payloads = []
         for line in lines:
-            # Clean up bullet points or numbers
             cleaned = re.sub(r'^\d+[\.\)]\s*', '', line)
             cleaned = re.sub(r'^[-\*\u2022]\s*', '', cleaned)
             cleaned = cleaned.strip('"\'`')
@@ -193,46 +280,85 @@ class LLMFuzzerEngine(object):
     @staticmethod
     def inject_payload(request_str, param_name, payload):
         """
-        Injects a payload into the specified parameter in the raw HTTP request string.
+        Injects a payload into the specified parameter in raw HTTP request string.
+        Uses exact parameter key matching and percent-encoding for URL parameters.
+        Supports dot-notation for nested JSON parameters (e.g. meta.role).
         """
         if not request_str or not param_name:
             return request_str
 
-        # 1. Handle JSON body injection
+        encoded_payload = urllib_parse.quote(str(payload), safe='')
+
         parts = request_str.split('\r\n\r\n', 1)
         delimiter = '\r\n\r\n'
         if len(parts) < 2:
             parts = request_str.split('\n\n', 1)
             delimiter = '\n\n'
 
-        if len(parts) == 2:
-            headers, body = parts[0], parts[1]
-            if body.strip().startswith('{'):
-                try:
-                    json_data = json.loads(body)
-                    if isinstance(json_data, dict) and param_name in json_data:
+        headers = parts[0]
+        body = parts[1] if len(parts) > 1 else ''
+
+        # 1. Handle JSON body injection
+        if body and (body.strip().startswith('{') or body.strip().startswith('[')):
+            try:
+                json_data = json.loads(body)
+                if isinstance(json_data, dict):
+                    if '.' in param_name:
+                        keys = param_name.split('.')
+                        curr = json_data
+                        for k in keys[:-1]:
+                            if isinstance(curr, dict) and k in curr:
+                                curr = curr[k]
+                            else:
+                                curr = None
+                                break
+                        if isinstance(curr, dict) and keys[-1] in curr:
+                            curr[keys[-1]] = payload
+                            new_body = json.dumps(json_data)
+                            new_headers = _update_content_length(headers, len(new_body))
+                            return new_headers + delimiter + new_body
+                    elif param_name in json_data:
                         json_data[param_name] = payload
                         new_body = json.dumps(json_data)
-                        return headers + delimiter + new_body
-                except Exception:
-                    pass
+                        new_headers = _update_content_length(headers, len(new_body))
+                        return new_headers + delimiter + new_body
+            except Exception:
+                pass
 
-            # 2. Handle POST body query string injection
-            if param_name + '=' in body:
-                pattern = re.escape(param_name) + r'=[^&\r\n]*'
-                replacement = param_name + '=' + str(payload)
-                new_body = re.sub(pattern, replacement, body, count=1)
-                return headers + delimiter + new_body
+        # 2. Handle POST body query string injection
+        if body and '=' in body:
+            tokens = body.split('&')
+            matched = False
+            for idx, token in enumerate(tokens):
+                key = token.split('=', 1)[0] if '=' in token else token
+                if key == param_name:
+                    tokens[idx] = param_name + '=' + encoded_payload
+                    matched = True
+            if matched:
+                new_body = '&'.join(tokens)
+                new_headers = _update_content_length(headers, len(new_body))
+                return new_headers + delimiter + new_body
 
         # 3. Handle URL query string injection
         lines = request_str.splitlines()
         if lines:
             first_line = lines[0]
-            if param_name + '=' in first_line:
-                pattern = re.escape(param_name) + r'=[^&\s]*'
-                replacement = param_name + '=' + str(payload)
-                new_first_line = re.sub(pattern, replacement, first_line, count=1)
-                return request_str.replace(first_line, new_first_line, 1)
+            url_match = re.search(r'^([A-Z]+\s+)([^\s]+)(\s+HTTP/\d\.\d)', first_line)
+            if url_match:
+                prefix, full_path, suffix = url_match.group(1), url_match.group(2), url_match.group(3)
+                if '?' in full_path:
+                    path_part, query_part = full_path.split('?', 1)
+                    q_tokens = query_part.split('&')
+                    q_matched = False
+                    for idx, q_tok in enumerate(q_tokens):
+                        q_key = q_tok.split('=', 1)[0] if '=' in q_tok else q_tok
+                        if q_key == param_name:
+                            q_tokens[idx] = param_name + '=' + encoded_payload
+                            q_matched = True
+                    if q_matched:
+                        new_query = '&'.join(q_tokens)
+                        new_first_line = prefix + path_part + '?' + new_query + suffix
+                        return request_str.replace(first_line, new_first_line, 1)
 
         return request_str
 
@@ -258,7 +384,7 @@ class RaceOrchestratorEngine(object):
             is_anomaly = True
             notes.append("Server Error (" + str(status_code) + ")")
 
-        if baseline_lengths and content_length not in baseline_lengths:
+        if baseline_lengths is not None and len(baseline_lengths) > 0 and content_length not in baseline_lengths:
             is_anomaly = True
             notes.append("Deviating Content Length (" + str(content_length) + ")")
 
@@ -317,7 +443,7 @@ class PrivilegeMatrixEngine(object):
         if role_headers_raw:
             for line in role_headers_raw.splitlines():
                 line = line.strip()
-                if line and ':' in line:
+                if line and ':' in line and not line.startswith('#'):
                     role_headers_to_add.append(line)
 
         final_header_lines = [first_line] + filtered_headers + role_headers_to_add
@@ -340,3 +466,108 @@ class PrivilegeMatrixEngine(object):
             return {'status': 'ERROR', 'color': 'ORANGE', 'code': status_code}
         else:
             return {'status': 'OTHER', 'color': 'GRAY', 'code': status_code}
+
+
+class CorrelationEngine(object):
+    """
+    Engine for extracting dynamic tokens (CSRF tokens, auth tokens, session IDs)
+    from response headers and bodies, and propagating them across request steps.
+    """
+
+    TOKEN_KEYS = [
+        'csrf', 'csrf_token', 'xsrf', 'xsrf_token', '_csrf', 'token',
+        'access_token', 'auth_token', 'bearer', 'session_id', 'nonce'
+    ]
+
+    @staticmethod
+    def extract_tokens(response_str):
+        """
+        Extracts candidate tokens from raw HTTP response string.
+        Returns dict of {token_name: token_value}.
+        """
+        tokens = {}
+        if not response_str:
+            return tokens
+
+        parts = response_str.split('\r\n\r\n', 1)
+        if len(parts) < 2:
+            parts = response_str.split('\n\n', 1)
+
+        headers = parts[0]
+        body = parts[1] if len(parts) > 1 else ''
+
+        # 1. Parse Set-Cookie headers
+        for line in headers.splitlines():
+            if line.lower().startswith('set-cookie:'):
+                cookie_str = line.split(':', 1)[1].strip()
+                cookie_pair = cookie_str.split(';', 1)[0]
+                if '=' in cookie_pair:
+                    k, v = cookie_pair.split('=', 1)
+                    k_clean = k.strip()
+                    v_clean = v.strip()
+                    if v_clean:
+                        tokens['cookie:' + k_clean] = v_clean
+                        if any(tk in k_clean.lower() for tk in CorrelationEngine.TOKEN_KEYS):
+                            tokens[k_clean] = v_clean
+
+        # 2. Parse JSON response body
+        if body and (body.strip().startswith('{') or body.strip().startswith('[')):
+            try:
+                json_data = json.loads(body)
+                if isinstance(json_data, dict):
+                    for k, v in json_data.items():
+                        if isinstance(v, (str, int, float)) and v:
+                            k_lower = str(k).lower()
+                            if any(tk in k_lower for tk in CorrelationEngine.TOKEN_KEYS):
+                                tokens[str(k)] = str(v)
+            except Exception:
+                pass
+
+        # 3. Regex match HTML form input elements for CSRF tokens
+        matches = re.findall(r'<input[^>]+name=["\']([^"\']+)["\'][^>]+value=["\']([^"\']+)["\']', body, re.IGNORECASE)
+        for name, val in matches:
+            if any(tk in name.lower() for tk in CorrelationEngine.TOKEN_KEYS):
+                tokens[name] = val
+
+        return tokens
+
+    @staticmethod
+    def apply_token_updates(request_str, token_map):
+        """
+        Replaces token values in request_str using values from token_map.
+        """
+        if not request_str or not token_map:
+            return request_str
+
+        updated_req = request_str
+
+        for key, new_val in token_map.items():
+            if not new_val:
+                continue
+
+            lines = updated_req.splitlines()
+            new_lines = []
+            modified = False
+            for line in lines:
+                if ':' in line:
+                    h_name, h_val = line.split(':', 1)
+                    h_clean = h_name.strip().lower().replace('_', '-').replace('x-', '')
+                    k_clean = key.lower().replace('_', '-').replace('x-', '')
+                    if h_clean == k_clean or h_name.strip().lower() == key.lower():
+                        new_lines.append(h_name + ": " + str(new_val))
+                        modified = True
+                        continue
+                    elif h_name.strip().lower() == 'authorization' and any(k in key.lower() for k in ['bearer', 'token', 'access']):
+                        new_lines.append(h_name + ": Bearer " + str(new_val))
+                        modified = True
+                        continue
+                new_lines.append(line)
+
+            if modified:
+                delimiter = '\r\n' if '\r\n' in updated_req else '\n'
+                updated_req = delimiter.join(new_lines)
+
+            # Update parameter values in request
+            updated_req = LLMFuzzerEngine.inject_payload(updated_req, key, new_val)
+
+        return updated_req
