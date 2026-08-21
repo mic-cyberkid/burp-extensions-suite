@@ -23,6 +23,12 @@ cd extensions/logic-flaw-visualizer
 mvn package
 cd ../..
 
+# ApexBounty Toolkit
+echo "Building ApexBounty Toolkit..."
+cd extensions/apexbounty-toolkit
+mvn package
+cd ../..
+
 echo "Java extensions built successfully."
 
 echo "Python extensions require no build step (load directly into Burp)."

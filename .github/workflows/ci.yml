@@ -30,6 +30,7 @@ jobs:
         cd extensions/param-fuzzer && mvn test
         cd ../../extensions/custom-decoder && mvn test
         cd ../../extensions/logic-flaw-visualizer && mvn test
+        cd ../../extensions/apexbounty-toolkit && mvn test
 
     - name: Run Python Tests
       run: |
@@ -52,6 +53,7 @@ jobs:
         cp extensions/param-fuzzer/target/*-jar-with-dependencies.jar dist/jars/ParamFuzzer.jar
         cp extensions/custom-decoder/target/*-jar-with-dependencies.jar dist/jars/CustomDecoder.jar
         cp extensions/logic-flaw-visualizer/target/*-jar-with-dependencies.jar dist/jars/LogicVisualizer.jar
+        cp extensions/apexbounty-toolkit/target/*-jar-with-dependencies.jar dist/jars/ApexBountyToolkit.jar
 
         # Create ZIP
         zip -r burp-extensions-suite-full.zip dist/
