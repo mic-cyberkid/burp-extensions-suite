@@ -2,12 +2,12 @@
 """
 RaceOrchestratorTab.py - Tab 3: Multi-Endpoint Race Orchestrator
 Coordinates multi-threaded synchronized race conditions across distinct endpoints
-using CountDownLatch.
+using CountDownLatch, baseline anomaly classification, thread safety, and aggregate summary analysis.
 """
 
 import threading
 import time
-from java.awt import BorderLayout, FlowLayout, Color, Component
+from java.awt import BorderLayout, FlowLayout, Color
 from java.util.concurrent import CountDownLatch
 from javax.swing import (
     JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
@@ -27,7 +27,7 @@ class AnomalyCellRenderer(DefaultTableCellRenderer):
         flag_val = str(table.getModel().getValueAt(row, 4))   # Anomaly Flag column
 
         if not isSelected:
-            if "500" in status_val or "Server Error" in flag_val:
+            if "500" in status_val or "Server Error" in flag_val or "ERROR" in status_val:
                 cell.setBackground(Color(255, 210, 210)) # Soft Red
                 cell.setForeground(Color.BLACK)
             elif "Yes" in flag_val or "Deviating" in flag_val:
@@ -49,7 +49,8 @@ class RaceOrchestratorTab(object):
         self.service_b = None
         self.bytes_b = None
 
-        self.race_results = [] # stores (target_label, thread_id, status, length, time_ms, is_anomaly, note, resp_obj)
+        self.race_results = [] # stores (target_label, thread_id, status, length, flag_str, note, resp_obj)
+        self.results_lock = threading.Lock()
 
         self._init_ui()
 
@@ -77,6 +78,10 @@ class RaceOrchestratorTab(object):
 
         self.btn_run_race = JButton("Run Race Attack", actionPerformed=self._on_run_race)
         control_panel.add(self.btn_run_race)
+
+        self.lbl_summary = JLabel("Race Summary: Ready")
+        control_panel.add(JSeparator(1))
+        control_panel.add(self.lbl_summary)
 
         # Requests View: Split Pane containing Request A editor and Request B editor
         self.editor_a = self.callbacks.createMessageEditor(None, True)
@@ -150,9 +155,15 @@ class RaceOrchestratorTab(object):
             JOptionPane.showMessageDialog(self.panel, "Threads and Delay must be valid integers.")
             return
 
+        if threads_per_endpoint <= 0 or threads_per_endpoint > 100:
+            JOptionPane.showMessageDialog(self.panel, "Threads per endpoint must be between 1 and 100.")
+            return
+
         self.btn_run_race.setEnabled(False)
+        self.lbl_summary.setText("Race Summary: Gathering baseline...")
         self.results_table_model.setRowCount(0)
-        self.race_results = []
+        with self.results_lock:
+            self.race_results = []
 
         # Spawn background orchestrator thread
         t = threading.Thread(
@@ -170,6 +181,21 @@ class RaceOrchestratorTab(object):
 
             baseline_lengths = set()
 
+            # Pre-flight baseline collection for anomaly length deviation comparison
+            try:
+                base_resp_a = self.callbacks.makeHttpRequest(self.service_a, req_a_bytes)
+                if base_resp_a and base_resp_a.getResponse():
+                    baseline_lengths.add(len(base_resp_a.getResponse()))
+            except Exception:
+                pass
+
+            try:
+                base_resp_b = self.callbacks.makeHttpRequest(self.service_b, req_b_bytes)
+                if base_resp_b and base_resp_b.getResponse():
+                    baseline_lengths.add(len(base_resp_b.getResponse()))
+            except Exception:
+                pass
+
             def worker_task(target_name, service, req_bytes, thread_id):
                 # Wait for synchronized release signal
                 start_latch.await()
@@ -186,17 +212,28 @@ class RaceOrchestratorTab(object):
                         status = resp_info.getStatusCode()
                         length = len(resp.getResponse())
 
-                    is_anomaly, note = RaceOrchestratorEngine.classify_race_response(status, length)
+                    is_anomaly, note = RaceOrchestratorEngine.classify_race_response(status, length, baseline_lengths)
                     flag_str = "Yes" if is_anomaly else "No"
 
-                    self.race_results.append((target_name, str(thread_id), str(status), str(length), flag_str, note, resp))
+                    with self.results_lock:
+                        self.race_results.append((target_name, str(thread_id), str(status), str(length), flag_str, note, resp))
 
                     def add_row(t_name=target_name, tid=str(thread_id), st=str(status), l=str(length), flg=flag_str, nt=note):
                         self.results_table_model.addRow([t_name, tid, st, l, flg, nt])
 
                     SwingUtilities.invokeLater(add_row)
+
                 except Exception as ex:
-                    pass
+                    err_status = "ERROR"
+                    err_note = "Exception: " + str(ex)
+                    with self.results_lock:
+                        self.race_results.append((target_name, str(thread_id), err_status, "0", "Yes", err_note, None))
+
+                    def add_err_row(t_name=target_name, tid=str(thread_id)):
+                        self.results_table_model.addRow([t_name, tid, err_status, "0", "Yes", err_note])
+
+                    SwingUtilities.invokeLater(add_err_row)
+
                 finally:
                     done_latch.countDown()
 
@@ -218,6 +255,32 @@ class RaceOrchestratorTab(object):
             # Wait for all race threads to complete
             done_latch.await()
 
+            # Compute aggregate summary statistics
+            total_count = 0
+            success_count = 0
+            anomaly_count = 0
+
+            with self.results_lock:
+                total_count = len(self.race_results)
+                for item in self.race_results:
+                    st_str = item[2]
+                    flg_str = item[4]
+                    if st_str.isdigit() and 200 <= int(st_str) < 300:
+                        success_count += 1
+                    if flg_str == "Yes":
+                        anomaly_count += 1
+
+            summary_text = (
+                "Race Summary: " + str(total_count) + " total | " +
+                str(success_count) + " succeeded (2xx) | " +
+                str(anomaly_count) + " anomalies"
+            )
+
+            def update_summary():
+                self.lbl_summary.setText(summary_text)
+
+            SwingUtilities.invokeLater(update_summary)
+
         finally:
             def reenable():
                 self.btn_run_race.setEnabled(True)
@@ -227,7 +290,12 @@ class RaceOrchestratorTab(object):
         if event.getValueIsAdjusting():
             return
         row = self.results_table.getSelectedRow()
-        if 0 <= row < len(self.race_results):
-            resp_obj = self.race_results[row][6]
-            if resp_obj and resp_obj.getResponse():
-                self.resp_editor.setMessage(resp_obj.getResponse(), False)
+        resp_obj = None
+        with self.results_lock:
+            if 0 <= row < len(self.race_results):
+                resp_obj = self.race_results[row][6]
+
+        if resp_obj and resp_obj.getResponse():
+            self.resp_editor.setMessage(resp_obj.getResponse(), False)
+        else:
+            self.resp_editor.setMessage(self.helpers.stringToBytes("No Response Recorded"), False)

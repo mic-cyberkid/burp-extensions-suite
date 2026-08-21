@@ -1,16 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 LLMFuzzerTab.py - Tab 2: LLM Context Fuzzer
-Handles parameter extraction, LLM API call for payload generation, and payload injection.
+Handles parameter extraction, masked API key handling, prompt header redaction,
+remote API opt-in checks, multi-provider API calls (OpenAI & Anthropic),
+and two-phase payload generation & fuzz execution.
 """
 
 import threading
 import json
-import urllib2
-from java.awt import BorderLayout, FlowLayout, GridBagLayout, GridBagConstraints, Insets, Dimension
+
+try:
+    import urllib2
+except ImportError:
+    import urllib.request as urllib2
+
+from java.awt import BorderLayout, FlowLayout, Dimension, GridLayout
 from javax.swing import (
-    JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
-    JComboBox, JSeparator, SwingUtilities, JOptionPane, ListSelectionModel
+    JPanel, JButton, JLabel, JTextField, JPasswordField, JCheckBox, JTextArea,
+    JTable, JScrollPane, JSplitPane, JComboBox, JSeparator, SwingUtilities,
+    JOptionPane, BorderFactory
 )
 from javax.swing.table import DefaultTableModel
 
@@ -24,6 +32,7 @@ class LLMFuzzerTab(object):
         self.current_request_bytes = None
         self.extracted_params = []
         self.fuzz_results = [] # stores (payload, status, length, req_resp_obj)
+        self.results_lock = threading.Lock()
 
         self._init_ui()
 
@@ -31,14 +40,28 @@ class LLMFuzzerTab(object):
         self.panel = JPanel(BorderLayout())
 
         # Top Configuration Bar
+        top_container = JPanel(BorderLayout())
+
         config_panel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 5))
 
-        config_panel.add(JLabel("LLM API Key:"))
-        self.txt_api_key = JTextField("", 18)
+        lbl_title = JLabel("LLM Context Fuzzer")
+        font = lbl_title.getFont()
+        if font:
+            lbl_title.setFont(font.deriveFont(font.getStyle() | 1, 14.0))
+
+        config_panel.add(lbl_title)
+        config_panel.add(JSeparator(1))
+
+        config_panel.add(JLabel("API Key:"))
+        self.txt_api_key = JPasswordField("", 12)
         config_panel.add(self.txt_api_key)
 
+        config_panel.add(JLabel("Model:"))
+        self.txt_model = JTextField("gpt-3.5-turbo", 10)
+        config_panel.add(self.txt_model)
+
         config_panel.add(JLabel("API Endpoint:"))
-        self.txt_api_url = JTextField("https://api.openai.com/v1/chat/completions", 25)
+        self.txt_api_url = JTextField("https://api.openai.com/v1/chat/completions", 20)
         config_panel.add(self.txt_api_url)
 
         config_panel.add(JLabel("Target Param:"))
@@ -46,16 +69,34 @@ class LLMFuzzerTab(object):
         self.combo_params.setPreferredSize(Dimension(140, 25))
         config_panel.add(self.combo_params)
 
-        self.btn_fuzz = JButton("Generate Payloads & Fuzz", actionPerformed=self._on_generate_and_fuzz)
-        config_panel.add(self.btn_fuzz)
+        # Opt-in check for sending data to external APIs
+        optin_panel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 2))
+        self.chk_allow_remote = JCheckBox("Allow Sending Redacted Request Context to Third-Party API", False)
+        self.btn_generate = JButton("1. Generate Payloads", actionPerformed=self._on_generate_payloads)
+        self.btn_fire = JButton("2. Fire Payloads", actionPerformed=self._on_fire_payloads)
 
-        # Main View: Left = Request Editor, Right = Fuzz Results & Viewer
-        # Burp Message Editor for base request
+        optin_panel.add(self.chk_allow_remote)
+        optin_panel.add(self.btn_generate)
+        optin_panel.add(self.btn_fire)
+
+        top_container.add(config_panel, BorderLayout.NORTH)
+        top_container.add(optin_panel, BorderLayout.SOUTH)
+
+        # Center Section: Left = Request Editor & Generated Payloads, Right = Results & Response Inspector
         self.req_editor = self.callbacks.createMessageEditor(None, True)
 
-        req_panel = JPanel(BorderLayout())
-        req_panel.add(JLabel(" Base Request"), BorderLayout.NORTH)
-        req_panel.add(self.req_editor.getComponent(), BorderLayout.CENTER)
+        payload_panel = JPanel(BorderLayout())
+        payload_panel.setBorder(BorderFactory.createTitledBorder(" Generated Fuzz Payloads (Editable) "))
+        self.txt_payloads = JTextArea(6, 30)
+        payload_scroll = JScrollPane(self.txt_payloads)
+        payload_panel.add(payload_scroll, BorderLayout.CENTER)
+
+        left_split = JSplitPane(JSplitPane.VERTICAL_SPLIT, self.req_editor.getComponent(), payload_panel)
+        left_split.setResizeWeight(0.6)
+
+        left_panel = JPanel(BorderLayout())
+        left_panel.add(JLabel(" Base Target Request"), BorderLayout.NORTH)
+        left_panel.add(left_split, BorderLayout.CENTER)
 
         # Right side: Results Table + Request/Response Viewer
         self.results_table_model = DefaultTableModel(["Payload", "Status", "Content Length"], 0)
@@ -70,10 +111,10 @@ class LLMFuzzerTab(object):
         right_split = JSplitPane(JSplitPane.VERTICAL_SPLIT, res_scroll, self.resp_editor.getComponent())
         right_split.setResizeWeight(0.5)
 
-        main_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, req_panel, right_split)
-        main_split.setResizeWeight(0.4)
+        main_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left_panel, right_split)
+        main_split.setResizeWeight(0.45)
 
-        self.panel.add(config_panel, BorderLayout.NORTH)
+        self.panel.add(top_container, BorderLayout.NORTH)
         self.panel.add(main_split, BorderLayout.CENTER)
 
     def get_component(self):
@@ -100,44 +141,48 @@ class LLMFuzzerTab(object):
 
         SwingUtilities.invokeLater(update_params_combo)
 
-    def _on_generate_and_fuzz(self, event):
+    def _get_selected_param_name(self):
+        selected_param_idx = self.combo_params.getSelectedIndex()
+        if selected_param_idx < 0 or selected_param_idx >= len(self.extracted_params):
+            return str(self.combo_params.getSelectedItem() or "param")
+        return self.extracted_params[selected_param_idx]['name']
+
+    def _on_generate_payloads(self, event):
         req_bytes = self.req_editor.getMessage()
         if not req_bytes or not self.current_http_service:
             JOptionPane.showMessageDialog(self.panel, "Please set a target request first.")
             return
 
-        selected_param_idx = self.combo_params.getSelectedIndex()
-        if selected_param_idx < 0 or selected_param_idx >= len(self.extracted_params):
-            param_name = str(self.combo_params.getSelectedItem())
-        else:
-            param_name = self.extracted_params[selected_param_idx]['name']
-
-        api_key = self.txt_api_key.getText().strip()
+        param_name = self._get_selected_param_name()
+        api_key = str(self.txt_api_key.getPassword()).strip()
         api_url = self.txt_api_url.getText().strip()
+        model_name = self.txt_model.getText().strip() or "gpt-3.5-turbo"
+        allow_remote = self.chk_allow_remote.isSelected()
 
-        self.btn_fuzz.setEnabled(False)
-        self.results_table_model.setRowCount(0)
-        self.fuzz_results = []
+        if allow_remote and not api_key:
+            JOptionPane.showMessageDialog(self.panel, "Remote API opt-in is enabled, but no API Key was provided. Please enter an API Key.")
+            return
 
-        # Run async thread for LLM API call & fuzzing
+        self.btn_generate.setEnabled(False)
+
+        # Async payload generation
         t = threading.Thread(
-            target=self._fuzz_worker_thread,
-            args=(req_bytes, param_name, api_key, api_url)
+            target=self._generate_worker_thread,
+            args=(req_bytes, param_name, api_key, api_url, model_name, allow_remote)
         )
         t.daemon = True
         t.start()
 
-    def _fuzz_worker_thread(self, req_bytes, param_name, api_key, api_url):
+    def _generate_worker_thread(self, req_bytes, param_name, api_key, api_url, model_name, allow_remote):
         try:
             raw_req = self.helpers.bytesToString(req_bytes)
             payloads = []
 
-            # Call LLM API if key provided, else fallback to built-in smart fuzz payloads
-            if api_key:
-                payloads = self._call_llm_api(param_name, raw_req, api_key, api_url)
+            if allow_remote and api_key:
+                payloads = self._call_llm_api(param_name, raw_req, api_key, api_url, model_name)
 
             if not payloads:
-                # Fallback smart security test payloads
+                # Local smart fallback payloads
                 payloads = [
                     "' OR '1'='1",
                     "\" OR \"1\"=\"1",
@@ -147,6 +192,46 @@ class LLMFuzzerTab(object):
                     "'; WAITFOR DELAY '0:0:5'--",
                     "1; SELECT pg_sleep(5)"
                 ]
+
+            def update_payload_text():
+                self.txt_payloads.setText("\n".join(payloads))
+
+            SwingUtilities.invokeLater(update_payload_text)
+
+        finally:
+            def reenable():
+                self.btn_generate.setEnabled(True)
+            SwingUtilities.invokeLater(reenable)
+
+    def _on_fire_payloads(self, event):
+        req_bytes = self.req_editor.getMessage()
+        if not req_bytes or not self.current_http_service:
+            JOptionPane.showMessageDialog(self.panel, "Please set a target request first.")
+            return
+
+        payload_text = self.txt_payloads.getText().strip()
+        if not payload_text:
+            JOptionPane.showMessageDialog(self.panel, "No payloads found in the payloads box. Please generate or enter payloads first.")
+            return
+
+        payloads = [line.strip() for line in payload_text.splitlines() if line.strip()]
+        param_name = self._get_selected_param_name()
+
+        self.btn_fire.setEnabled(False)
+        self.results_table_model.setRowCount(0)
+        with self.results_lock:
+            self.fuzz_results = []
+
+        t = threading.Thread(
+            target=self._fire_worker_thread,
+            args=(req_bytes, param_name, payloads)
+        )
+        t.daemon = True
+        t.start()
+
+    def _fire_worker_thread(self, req_bytes, param_name, payloads):
+        try:
+            raw_req = self.helpers.bytesToString(req_bytes)
 
             for payload in payloads:
                 mutated_req_str = LLMFuzzerEngine.inject_payload(raw_req, param_name, payload)
@@ -161,41 +246,72 @@ class LLMFuzzerTab(object):
                         status = str(resp_info.getStatusCode())
                         length = str(len(resp.getResponse()))
 
-                    self.fuzz_results.append((payload, status, length, resp))
+                    with self.results_lock:
+                        self.fuzz_results.append((payload, status, length, resp))
 
                     def add_row(p=payload, s=status, l=length):
                         self.results_table_model.addRow([p, s, l])
 
                     SwingUtilities.invokeLater(add_row)
                 except Exception as ex:
-                    pass
+                    err_status = "ERROR"
+                    err_length = str(ex)
+                    with self.results_lock:
+                        self.fuzz_results.append((payload, err_status, err_length, None))
+
+                    def add_err_row(p=payload, s=err_status, l=err_length):
+                        self.results_table_model.addRow([p, s, l])
+
+                    SwingUtilities.invokeLater(add_err_row)
 
         finally:
             def reenable():
-                self.btn_fuzz.setEnabled(True)
+                self.btn_fire.setEnabled(True)
             SwingUtilities.invokeLater(reenable)
 
-    def _call_llm_api(self, param_name, raw_req, api_key, api_url):
+    def _call_llm_api(self, param_name, raw_req, api_key, api_url, model_name):
         prompt = LLMFuzzerEngine.build_prompt(param_name, raw_req)
         try:
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": "Bearer " + api_key
-            }
-            body_data = {
-                "model": "gpt-3.5-turbo",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.7
-            }
-            req = urllib2.Request(api_url, json.dumps(body_data), headers)
-            res = urllib2.urlopen(req, timeout=10)
-            json_resp = json.loads(res.read())
+            is_anthropic = "anthropic.com" in api_url.lower()
 
-            if 'choices' in json_resp and json_resp['choices']:
+            if is_anthropic:
+                headers = {
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01"
+                }
+                body_data = {
+                    "model": model_name,
+                    "max_tokens": 1000,
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ]
+                }
+            else:
+                # OpenAI or OpenAI-compatible format
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + api_key
+                }
+                body_data = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7
+                }
+
+            req = urllib2.Request(api_url, json.dumps(body_data), headers)
+            res = urllib2.urlopen(req, timeout=12)
+            json_resp = json.loads(res.read().decode('utf-8'))
+
+            if is_anthropic and 'content' in json_resp and json_resp['content']:
+                text_content = json_resp['content'][0].get('text', '')
+                return LLMFuzzerEngine.parse_llm_payloads(text_content)
+            elif 'choices' in json_resp and json_resp['choices']:
                 content = json_resp['choices'][0]['message']['content']
                 return LLMFuzzerEngine.parse_llm_payloads(content)
+
         except Exception as ex:
             print("LLM API Call Error: " + str(ex))
 
@@ -205,7 +321,12 @@ class LLMFuzzerTab(object):
         if event.getValueIsAdjusting():
             return
         row = self.results_table.getSelectedRow()
-        if 0 <= row < len(self.fuzz_results):
-            resp_obj = self.fuzz_results[row][3]
-            if resp_obj and resp_obj.getResponse():
-                self.resp_editor.setMessage(resp_obj.getResponse(), False)
+        resp_obj = None
+        with self.results_lock:
+            if 0 <= row < len(self.fuzz_results):
+                resp_obj = self.fuzz_results[row][3]
+
+        if resp_obj and resp_obj.getResponse():
+            self.resp_editor.setMessage(resp_obj.getResponse(), False)
+        else:
+            self.resp_editor.setMessage(self.helpers.stringToBytes("No Response Recorded"), False)
