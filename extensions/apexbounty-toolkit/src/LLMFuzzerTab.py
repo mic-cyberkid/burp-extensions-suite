@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 LLMFuzzerTab.py - Tab 2: LLM Context Fuzzer
-Handles parameter extraction, LLM API call for payload generation, and payload injection.
+Handles parameter extraction, LLM API call for payload generation, configuration persistence,
+concurrent fuzzing execution, and payload injection.
 """
 
 import threading
 import json
 import urllib2
-from java.awt import BorderLayout, FlowLayout, GridBagLayout, GridBagConstraints, Insets, Dimension
+from java.awt import BorderLayout, FlowLayout, Dimension, GridBagLayout, GridBagConstraints, Insets
 from javax.swing import (
     JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
     JComboBox, JSeparator, SwingUtilities, JOptionPane, ListSelectionModel
 )
 from javax.swing.table import DefaultTableModel
 
-from ApexToolkitLogic import LLMFuzzerEngine
+from ApexToolkitLogic import (
+    LLMFuzzerEngine, log_info, log_error, save_setting, load_setting
+)
+
 
 class LLMFuzzerTab(object):
     def __init__(self, callbacks, helpers):
@@ -23,9 +27,10 @@ class LLMFuzzerTab(object):
         self.current_http_service = None
         self.current_request_bytes = None
         self.extracted_params = []
-        self.fuzz_results = [] # stores (payload, status, length, req_resp_obj)
+        self.fuzz_results = []  # stores (payload, status, length, resp_obj)
 
         self._init_ui()
+        self._load_saved_settings()
 
     def _init_ui(self):
         self.panel = JPanel(BorderLayout())
@@ -34,12 +39,17 @@ class LLMFuzzerTab(object):
         config_panel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 5))
 
         config_panel.add(JLabel("LLM API Key:"))
-        self.txt_api_key = JTextField("", 18)
+        self.txt_api_key = JTextField("", 16)
         config_panel.add(self.txt_api_key)
 
         config_panel.add(JLabel("API Endpoint:"))
-        self.txt_api_url = JTextField("https://api.openai.com/v1/chat/completions", 25)
+        self.txt_api_url = JTextField("https://api.openai.com/v1/chat/completions", 22)
         config_panel.add(self.txt_api_url)
+
+        self.btn_save_config = JButton("Save Config", actionPerformed=self._on_save_config)
+        config_panel.add(self.btn_save_config)
+
+        config_panel.add(JSeparator(1))
 
         config_panel.add(JLabel("Target Param:"))
         self.combo_params = JComboBox()
@@ -49,22 +59,20 @@ class LLMFuzzerTab(object):
         self.btn_fuzz = JButton("Generate Payloads & Fuzz", actionPerformed=self._on_generate_and_fuzz)
         config_panel.add(self.btn_fuzz)
 
-        # Main View: Left = Request Editor, Right = Fuzz Results & Viewer
-        # Burp Message Editor for base request
+        # Base Request Editor
         self.req_editor = self.callbacks.createMessageEditor(None, True)
 
         req_panel = JPanel(BorderLayout())
         req_panel.add(JLabel(" Base Request"), BorderLayout.NORTH)
         req_panel.add(self.req_editor.getComponent(), BorderLayout.CENTER)
 
-        # Right side: Results Table + Request/Response Viewer
+        # Right Side: Results Table + Response Editor
         self.results_table_model = DefaultTableModel(["Payload", "Status", "Content Length"], 0)
         self.results_table = JTable(self.results_table_model)
         self.results_table.getSelectionModel().addListSelectionListener(self._on_row_selected)
 
         res_scroll = JScrollPane(self.results_table)
 
-        # Response viewer for selected fuzz item
         self.resp_editor = self.callbacks.createMessageEditor(None, False)
 
         right_split = JSplitPane(JSplitPane.VERTICAL_SPLIT, res_scroll, self.resp_editor.getComponent())
@@ -78,6 +86,19 @@ class LLMFuzzerTab(object):
 
     def get_component(self):
         return self.panel
+
+    def _load_saved_settings(self):
+        key = load_setting(self.callbacks, "llm_api_key", "")
+        url = load_setting(self.callbacks, "llm_api_url", "https://api.openai.com/v1/chat/completions")
+        self.txt_api_key.setText(key)
+        self.txt_api_url.setText(url)
+
+    def _on_save_config(self, event):
+        key = self.txt_api_key.getText().strip()
+        url = self.txt_api_url.getText().strip()
+        save_setting(self.callbacks, "llm_api_key", key)
+        save_setting(self.callbacks, "llm_api_url", url)
+        JOptionPane.showMessageDialog(self.panel, "LLM Fuzzer settings saved successfully.")
 
     def set_target_request(self, http_service, request_bytes):
         """
@@ -115,11 +136,14 @@ class LLMFuzzerTab(object):
         api_key = self.txt_api_key.getText().strip()
         api_url = self.txt_api_url.getText().strip()
 
+        # Save configuration on fuzz start
+        save_setting(self.callbacks, "llm_api_key", api_key)
+        save_setting(self.callbacks, "llm_api_url", api_url)
+
         self.btn_fuzz.setEnabled(False)
         self.results_table_model.setRowCount(0)
         self.fuzz_results = []
 
-        # Run async thread for LLM API call & fuzzing
         t = threading.Thread(
             target=self._fuzz_worker_thread,
             args=(req_bytes, param_name, api_key, api_url)
@@ -132,12 +156,10 @@ class LLMFuzzerTab(object):
             raw_req = self.helpers.bytesToString(req_bytes)
             payloads = []
 
-            # Call LLM API if key provided, else fallback to built-in smart fuzz payloads
             if api_key:
                 payloads = self._call_llm_api(param_name, raw_req, api_key, api_url)
 
             if not payloads:
-                # Fallback smart security test payloads
                 payloads = [
                     "' OR '1'='1",
                     "\" OR \"1\"=\"1",
@@ -148,7 +170,11 @@ class LLMFuzzerTab(object):
                     "1; SELECT pg_sleep(5)"
                 ]
 
-            for payload in payloads:
+            # Parallel fuzzing using threads
+            threads = []
+            lock = threading.Lock()
+
+            def execute_payload(payload):
                 mutated_req_str = LLMFuzzerEngine.inject_payload(raw_req, param_name, payload)
                 mutated_bytes = self.helpers.stringToBytes(mutated_req_str)
 
@@ -161,15 +187,27 @@ class LLMFuzzerTab(object):
                         status = str(resp_info.getStatusCode())
                         length = str(len(resp.getResponse()))
 
-                    self.fuzz_results.append((payload, status, length, resp))
+                    with lock:
+                        self.fuzz_results.append((payload, status, length, resp))
 
                     def add_row(p=payload, s=status, l=length):
                         self.results_table_model.addRow([p, s, l])
 
                     SwingUtilities.invokeLater(add_row)
                 except Exception as ex:
-                    pass
+                    log_error(self.callbacks, "Fuzz payload request failed: " + str(payload), ex)
 
+            for payload in payloads:
+                t = threading.Thread(target=execute_payload, args=(payload,))
+                t.daemon = True
+                threads.append(t)
+                t.start()
+
+            for t in threads:
+                t.join()
+
+        except Exception as ex:
+            log_error(self.callbacks, "LLM Fuzzer worker thread error", ex)
         finally:
             def reenable():
                 self.btn_fuzz.setEnabled(True)
@@ -197,7 +235,7 @@ class LLMFuzzerTab(object):
                 content = json_resp['choices'][0]['message']['content']
                 return LLMFuzzerEngine.parse_llm_payloads(content)
         except Exception as ex:
-            print("LLM API Call Error: " + str(ex))
+            log_error(self.callbacks, "LLM API Call Error", ex)
 
         return []
 

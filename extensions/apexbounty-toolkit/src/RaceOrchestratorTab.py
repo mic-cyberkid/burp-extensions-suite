@@ -2,7 +2,7 @@
 """
 RaceOrchestratorTab.py - Tab 3: Multi-Endpoint Race Orchestrator
 Coordinates multi-threaded synchronized race conditions across distinct endpoints
-using CountDownLatch.
+using CountDownLatch, anomaly detection, and CSV result export.
 """
 
 import threading
@@ -11,11 +11,12 @@ from java.awt import BorderLayout, FlowLayout, Color, Component
 from java.util.concurrent import CountDownLatch
 from javax.swing import (
     JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
-    JSeparator, SwingUtilities, JOptionPane
+    JSeparator, SwingUtilities, JOptionPane, JFileChooser
 )
 from javax.swing.table import DefaultTableModel, DefaultTableCellRenderer
 
-from ApexToolkitLogic import RaceOrchestratorEngine
+from ApexToolkitLogic import RaceOrchestratorEngine, log_info, log_error
+
 
 class AnomalyCellRenderer(DefaultTableCellRenderer):
     """
@@ -23,15 +24,15 @@ class AnomalyCellRenderer(DefaultTableCellRenderer):
     """
     def getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, column):
         cell = DefaultTableCellRenderer.getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, column)
-        status_val = str(table.getModel().getValueAt(row, 2)) # Status column
-        flag_val = str(table.getModel().getValueAt(row, 4))   # Anomaly Flag column
+        status_val = str(table.getModel().getValueAt(row, 2))  # Status column
+        flag_val = str(table.getModel().getValueAt(row, 4))    # Anomaly Flag column
 
         if not isSelected:
             if "500" in status_val or "Server Error" in flag_val:
-                cell.setBackground(Color(255, 210, 210)) # Soft Red
+                cell.setBackground(Color(255, 210, 210))  # Soft Red
                 cell.setForeground(Color.BLACK)
             elif "Yes" in flag_val or "Deviating" in flag_val:
-                cell.setBackground(Color(255, 255, 200)) # Soft Yellow
+                cell.setBackground(Color(255, 255, 200))  # Soft Yellow
                 cell.setForeground(Color.BLACK)
             else:
                 cell.setBackground(Color.WHITE)
@@ -49,7 +50,7 @@ class RaceOrchestratorTab(object):
         self.service_b = None
         self.bytes_b = None
 
-        self.race_results = [] # stores (target_label, thread_id, status, length, time_ms, is_anomaly, note, resp_obj)
+        self.race_results = []  # stores (target_label, thread_id, status, length, flag_str, note, resp_obj)
 
         self._init_ui()
 
@@ -77,6 +78,9 @@ class RaceOrchestratorTab(object):
 
         self.btn_run_race = JButton("Run Race Attack", actionPerformed=self._on_run_race)
         control_panel.add(self.btn_run_race)
+
+        self.btn_export_csv = JButton("Export CSV", actionPerformed=self._on_export_csv)
+        control_panel.add(self.btn_export_csv)
 
         # Requests View: Split Pane containing Request A editor and Request B editor
         self.editor_a = self.callbacks.createMessageEditor(None, True)
@@ -129,6 +133,25 @@ class RaceOrchestratorTab(object):
         self.bytes_b = request_bytes
         self.editor_b.setMessage(request_bytes, True)
 
+    def _on_export_csv(self, event):
+        if not self.race_results:
+            JOptionPane.showMessageDialog(self.panel, "No race attack results to export.")
+            return
+
+        csv_content = RaceOrchestratorEngine.export_race_results_csv(self.race_results)
+        chooser = JFileChooser()
+        chooser.setDialogTitle("Export Race Results to CSV")
+        ret = chooser.showSaveDialog(self.panel)
+        if ret == JFileChooser.APPROVE_OPTION:
+            f = chooser.getSelectedFile()
+            try:
+                writer = open(f.getAbsolutePath(), 'w')
+                writer.write(csv_content)
+                writer.close()
+                JOptionPane.showMessageDialog(self.panel, "Race results exported successfully!")
+            except Exception as ex:
+                log_error(self.callbacks, "Export CSV failed", ex)
+
     def _on_run_race(self, event):
         req_a_bytes = self.editor_a.getMessage()
         req_b_bytes = self.editor_b.getMessage()
@@ -137,7 +160,6 @@ class RaceOrchestratorTab(object):
             JOptionPane.showMessageDialog(self.panel, "Request A is not set. Please set Request A first.")
             return
 
-        # If Request B is not explicitly set, use Request A for both endpoints
         if not req_b_bytes or not self.service_b:
             self.service_b = self.service_a
             req_b_bytes = req_a_bytes
@@ -154,7 +176,6 @@ class RaceOrchestratorTab(object):
         self.results_table_model.setRowCount(0)
         self.race_results = []
 
-        # Spawn background orchestrator thread
         t = threading.Thread(
             target=self._race_orchestrator_thread,
             args=(req_a_bytes, req_b_bytes, threads_per_endpoint, delay_ms)
@@ -168,10 +189,9 @@ class RaceOrchestratorTab(object):
             start_latch = CountDownLatch(1)
             done_latch = CountDownLatch(total_threads)
 
-            baseline_lengths = set()
+            lock = threading.Lock()
 
             def worker_task(target_name, service, req_bytes, thread_id):
-                # Wait for synchronized release signal
                 start_latch.await()
                 if delay_ms > 0:
                     time.sleep(delay_ms / 1000.0)
@@ -189,18 +209,18 @@ class RaceOrchestratorTab(object):
                     is_anomaly, note = RaceOrchestratorEngine.classify_race_response(status, length)
                     flag_str = "Yes" if is_anomaly else "No"
 
-                    self.race_results.append((target_name, str(thread_id), str(status), str(length), flag_str, note, resp))
+                    with lock:
+                        self.race_results.append((target_name, str(thread_id), str(status), str(length), flag_str, note, resp))
 
                     def add_row(t_name=target_name, tid=str(thread_id), st=str(status), l=str(length), flg=flag_str, nt=note):
                         self.results_table_model.addRow([t_name, tid, st, l, flg, nt])
 
                     SwingUtilities.invokeLater(add_row)
                 except Exception as ex:
-                    pass
+                    log_error(self.callbacks, "Race worker execution error for thread " + str(thread_id), ex)
                 finally:
                     done_latch.countDown()
 
-            # Create and start all worker threads
             threads = []
             for i in range(threads_per_endpoint):
                 t1 = threading.Thread(target=worker_task, args=("Request A", self.service_a, req_a_bytes, "A-" + str(i + 1)))
@@ -212,12 +232,11 @@ class RaceOrchestratorTab(object):
                 t1.start()
                 t2.start()
 
-            # Release all queued threads simultaneously!
             start_latch.countDown()
-
-            # Wait for all race threads to complete
             done_latch.await()
 
+        except Exception as ex:
+            log_error(self.callbacks, "Race Orchestrator thread error", ex)
         finally:
             def reenable():
                 self.btn_run_race.setEnabled(True)

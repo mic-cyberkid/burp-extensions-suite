@@ -94,11 +94,12 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
     def processHttpMessage(self, toolFlag, isRequest, messageInfo):
         """
         Listens to HTTP traffic in Burp. Re-routes request messages from Proxy
-        to the Dynamic Privilege Matrix for background privilege matrix replay.
+        to Logic Breaker (if recording) and Dynamic Privilege Matrix.
         """
         # Listen only to request messages coming through Burp Proxy (toolFlag == 4 / TOOL_PROXY)
         if isRequest and toolFlag == self.callbacks.TOOL_PROXY:
             self.privilege_matrix_tab.handle_proxy_request(messageInfo)
+            self.logic_breaker_tab.handle_proxy_request(messageInfo)
 
     # --------------------------------------------------------------------------
     # IContextMenuFactory Implementation
