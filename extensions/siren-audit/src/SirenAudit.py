@@ -11,46 +11,6 @@ using the AGENTS.md file in this repo as the agent's operating rules.
 Requirements: Burp Suite with a Jython 2.7 standalone JAR configured under
 Extender > Options > Python Environment, and a Jules API key
 (https://jules.google.com -> Settings -> API keys).
-
-What this extension does NOT do:
-  - It never sends anything to Jules until you click Dispatch (Preview Bundle
-    and Copy Prompt let you inspect the exact payload first).
-  - It never replays a captured request itself; it only forwards what Burp
-    already captured. Any live re-testing is left to Jules to *propose*,
-    per AGENTS.md's operator-approval gating, and to you to actually run.
-  - It does not submit anything to a bug bounty program on your behalf.
-
-Key behaviors worth knowing about:
-  - Both the request AND the response of each captured item are sent (not
-    just the request) -- differential auth analysis needs to see what data
-    actually came back under each role.
-  - Authorization/Cookie/Set-Cookie/API-key-shaped headers and common
-    password/token/secret-shaped body fields are redacted by default before
-    anything leaves Burp. This is a best-effort heuristic, not a guarantee --
-    review what you're sending, especially for unusual auth schemes.
-  - All network calls to the Jules API run on a background thread; the Burp
-    UI is never blocked waiting on them.
-  - Connection settings (source, branch, task type, automation preferences)
-    persist across Burp restarts via Burp's extension settings. The API key
-    is only persisted if you explicitly check "Remember".
-
-Multiple sessions: this extension tracks any number of Jules sessions at
-once, not just one. "Dispatch as New Session" always starts a fresh one;
-"Send as Follow-up to Selected Session" targets whichever row is selected
-in the Jules Sessions table. Each tracked session keeps its own status, PR
-list, and activity log; a single Auto-refresh toggle polls every tracked
-session that isn't finished yet. The tracked list (session IDs, titles,
-task types -- not their content) persists across Burp restarts the same
-way the connection settings do.
-
---------------------------------------------------------------------------
-UI NOTE: this file's presentation layer (UITheme / RoundedButton /
-ZebraTableCellRenderer / the _build_*_panel and small _style_*/_label/_btn/
-_field_row helpers on BurpExtender) was restyled for visual hierarchy and
-Burp dark/light-mode support. None of it changes what the extension does --
-every redaction rule, API call, event handler and piece of persisted state
-below is unchanged. See the accompanying summary for details.
---------------------------------------------------------------------------
 """
 
 import json
@@ -73,10 +33,10 @@ from java.lang import Object
 
 from javax.swing import (
     JPanel, JLabel, JTextField, JPasswordField, JButton, JMenuItem, JCheckBox,
-    JComboBox, JTextArea, JTextPane, JScrollPane, BorderFactory, BoxLayout, Box,
+    JComboBox, JTextArea, JTextPane, JEditorPane, JScrollPane, BorderFactory, BoxLayout, Box,
     SwingUtilities, JOptionPane, JTable, JSplitPane, JSpinner, SpinnerNumberModel,
     DefaultComboBoxModel, JPopupMenu, JFileChooser, JList, DefaultListModel,
-    ListSelectionModel, UIManager
+    ListSelectionModel, UIManager, JTabbedPane
 )
 from javax.swing import Timer as SwingTimer
 from javax.swing.table import AbstractTableModel, DefaultTableCellRenderer
@@ -84,25 +44,17 @@ from javax.swing.text import SimpleAttributeSet, StyleConstants
 
 
 # ---------------------------------------------------------------------------
-# Module-level constants (audit/business logic -- unchanged by the redesign)
+# Module-level constants
 # ---------------------------------------------------------------------------
 
-# Kept identical to the SENSITIVE_HEADERS set in app-mapping-crawl/crawl.py so
-# redaction behaves consistently across every tool in this repo.
 SENSITIVE_HEADERS = set(["authorization", "cookie", "set-cookie", "x-api-key", "x-auth-token"])
 
-# Best-effort redaction of secret-shaped fields inside JSON/form bodies.
-# Deliberately conservative (word-boundaried key list) to avoid mangling
-# bodies beyond recognition; this is a safety net, not a guarantee.
 BODY_SECRET_KEY_RE = re.compile(
     r'(?i)("?\b(?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|'
     r'access[_-]?token|refresh[_-]?token|session[_-]?id|jwt|bearer)\b"?\s*[:=]\s*)'
     r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^&\s,}]+)'
 )
 
-# application/x-www-form-urlencoded deliberately does NOT match here -- it is
-# text, and it is exactly the kind of body (login forms, reset forms) this
-# tool most needs to inspect.
 BINARY_CONTENT_TYPE_PREFIXES = ("image/", "audio/", "video/", "font/")
 BINARY_CONTENT_TYPES_EXACT = set([
     "application/octet-stream", "application/pdf", "application/zip",
@@ -112,10 +64,6 @@ BINARY_CONTENT_TYPES_EXACT = set([
 ])
 BINARY_CONTENT_TYPE_VND_RE = re.compile(r'(?i)^application/vnd\.')
 
-# Semantic color role for each Jules session state (rendered by the theme --
-# see SessionStateCellRenderer). Same categories as before; only the
-# representation changed from hardcoded RGB to a theme-resolved role so the
-# palette can adapt to Burp's current Look and Feel.
 STATE_COLOR_ROLE = {
     "QUEUED": "neutral",
     "PLANNING": "info",
@@ -127,8 +75,6 @@ STATE_COLOR_ROLE = {
     "FAILED": "danger",
 }
 
-# Maps each Task Type option to (skill_name_or_None, framing_text). Keep the
-# skill names in sync with the folder names in the repo root.
 TASK_FRAMING = {
     "Differential Authorization Review (IDOR / BOLA)": (
         "burp-bundle-differential-audit",
@@ -168,22 +114,61 @@ TASK_FRAMING = {
 
 
 # ---------------------------------------------------------------------------
+# Markdown to HTML Parser Helper
+# ---------------------------------------------------------------------------
+
+def markdown_to_html(text, dark=True):
+    if not text:
+        return ""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _code_block(m):
+        code = m.group(1)
+        bg = "#1e293b" if dark else "#f1f5f9"
+        fg = "#f8fafc" if dark else "#0f172a"
+        return "<pre style=\"background-color: " + bg + "; color: " + fg + "; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px;\">" + code + "</pre>"
+    text = re.sub(r"```(?:[a-zA-Z0-9_]+)?\n?(.*?)```", _code_block, text, flags=re.DOTALL)
+
+    def _inline_code(m):
+        code = m.group(1)
+        bg = "#334155" if dark else "#e2e8f0"
+        fg = "#f8fafc" if dark else "#0f172a"
+        return "<code style=\"background-color: " + bg + "; color: " + fg + "; padding: 2px 4px; font-family: monospace; font-size: 11px;\">" + code + "</code>"
+    text = re.sub(r"`([^`]+)`", _inline_code, text)
+
+    h_color = "#60a5fa" if dark else "#2563eb"
+    def _h4(m): return "<h4 style=\"margin: 6px 0; color: " + h_color + "; font-size: 13px;\">" + m.group(1) + "</h4>"
+    def _h3(m): return "<h3 style=\"margin: 8px 0; color: " + h_color + "; font-size: 14px;\">" + m.group(1) + "</h3>"
+    def _h2(m): return "<h2 style=\"margin: 10px 0; color: " + h_color + "; font-size: 16px;\">" + m.group(1) + "</h2>"
+
+    text = re.sub(r"(?m)^###\s+(.*)$", _h4, text)
+    text = re.sub(r"(?m)^##\s+(.*)$", _h3, text)
+    text = re.sub(r"(?m)^#\s+(.*)$", _h2, text)
+
+    text = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"\*([^*]+)\*", r"<i>\1</i>", text)
+
+    def _li(m): return "<li style=\"margin-left: 12px;\">" + m.group(1) + "</li>"
+    text = re.sub(r"(?m)^\s*[\-\*]\s+(.*)$", _li, text)
+
+    lines = text.split("\n")
+    out = []
+    in_pre = False
+    for l in lines:
+        if "<pre" in l: in_pre = True
+        if "</pre>" in l: in_pre = False
+        if not in_pre and not l.startswith("<h") and not l.startswith("<li") and not l.startswith("<div"):
+            if l.strip() == "":
+                out.append("<br/>")
+            else:
+                out.append(l + "<br/>")
+        else:
+            out.append(l)
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Theme system
-#
-# Burp extensions built on the legacy IBurpExtender API don't get a direct
-# "give me Burp's current theme" callback the way Montoya extensions do. The
-# practical workaround -- used here -- is to ask Swing's own UIManager for
-# the background color Burp's Look and Feel has already installed for plain
-# panels, and derive everything else from that single real value. That means
-# section/row backgrounds always match whatever Burp is actually running
-# (dark or light, whatever the exact shade) instead of guessing at it, while
-# the semantic accent/success/warning/danger colors come from two curated,
-# contrast-checked palettes selected by measured luminance.
-#
-# The theme is resolved once, when the tab is first built. Burp doesn't hot-
-# swap a running extension's UI if you flip its own theme afterwards, so
-# this matches the tab's usual lifecycle; reload the extension after a Burp
-# theme change to re-detect.
 # ---------------------------------------------------------------------------
 
 def _relative_luminance(color):
@@ -191,10 +176,6 @@ def _relative_luminance(color):
 
 
 def _shade(color, delta):
-    """Nudges an RGB color toward lighter (positive delta) or darker
-    (negative), clamped to a valid channel range. Used to derive section/row/
-    hover/press backgrounds directly from a real base color rather than a
-    second set of hardcoded constants that could drift out of sync with it."""
     r = max(0, min(255, color.getRed() + delta))
     g = max(0, min(255, color.getGreen() + delta))
     b = max(0, min(255, color.getBlue() + delta))
@@ -202,10 +183,6 @@ def _shade(color, delta):
 
 
 class UITheme(object):
-    """Resolves a small set of semantic colors/fonts once at UI build time,
-    based on whether Burp is currently running a dark or light Look and
-    Feel. Every panel/component below reads from here rather than
-    hardcoding RGB triples, so the whole console shifts consistently."""
 
     LABEL_FONT = Font("SansSerif", Font.PLAIN, 12)
     LABEL_BOLD_FONT = Font("SansSerif", Font.BOLD, 12)
@@ -226,10 +203,6 @@ class UITheme(object):
         self.dark = _relative_luminance(base_bg) < 128
         self.base_bg = base_bg
 
-        # Backgrounds derived from Burp's real detected background so cards
-        # and striped rows always read as "a deliberate step away from the
-        # surrounding chrome" rather than clashing with whatever theme Burp
-        # actually has active.
         self.section_bg = _shade(base_bg, 9 if self.dark else -7)
         self.row_alt_bg = _shade(base_bg, 16 if self.dark else -13)
         self.input_bg = _shade(base_bg, -8 if self.dark else 3)
@@ -292,9 +265,6 @@ class UITheme(object):
 
 
 class _RoundedButtonHover(MouseAdapter):
-    """Drives a RoundedButton's hover/press repaint. Kept as a separate
-    listener (rather than overriding mouse methods on the button itself) so
-    RoundedButton's own method surface stays a plain JButton surface."""
 
     def __init__(self, button):
         self.button = button
@@ -318,11 +288,6 @@ class _RoundedButtonHover(MouseAdapter):
 
 
 class RoundedButton(JButton):
-    """A flat, rounded-corner JButton with real hover / press / focus /
-    disabled states. Same JButton surface as a plain button (construct with
-    text, then addActionListener/setEnabled/setToolTipText as usual) -- only
-    the painting differs -- so it drops in at every existing call site
-    without changing how any handler is wired up."""
 
     ARC = 8
 
@@ -360,7 +325,7 @@ class RoundedButton(JButton):
             hover = _shade(base, 16 if theme.dark else -14)
             press = _shade(base, -18 if theme.dark else -26)
             fg = theme.chip_fg
-        else:  # secondary / ghost -- the default for utility actions
+        else:
             base = theme.section_bg
             hover = _shade(base, 16 if theme.dark else -10)
             press = _shade(base, -14 if theme.dark else -22)
@@ -390,22 +355,12 @@ class RoundedButton(JButton):
                 g2.drawRoundRect(1, 1, self.getWidth() - 3, self.getHeight() - 3, self.ARC, self.ARC)
         finally:
             g2.dispose()
-        # paintComponent is a *protected* JComponent method -- Jython's usual
-        # "JavaClass.method(self, args)" unbound-super trick only resolves
-        # methods visible via Java's public reflection, so it can't see this
-        # one (that trick DOES work for the public getTableCellRendererComponent
-        # calls elsewhere in this file). Jython's actual mechanism for calling
-        # an overridden Java method's original implementation -- public or
-        # not -- is the auto-generated self.super__<name>(...) binding.
         try:
             self.super__paintComponent(g)
         except AttributeError:
             self._paint_label_fallback(g)
 
     def _paint_label_fallback(self, g):
-        """Only used if self.super__paintComponent isn't available for some
-        Jython-version-specific reason -- draws the button's own text so it
-        stays readable instead of rendering blank."""
         g2 = g.create()
         try:
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -430,23 +385,16 @@ class RoundedButton(JButton):
 
 
 class WrappingTextPane(JTextPane):
-    """JTextPane doesn't track its viewport's width the way
-    JTextArea(lineWrap=True) does; without this override long log lines grow
-    a horizontal scrollbar instead of wrapping. Used for the activity log so
-    it can render per-line status colors (see BurpExtender._log)."""
 
     def getScrollableTracksViewportWidth(self):
         return True
 
 
 # ---------------------------------------------------------------------------
-# Small helper classes (audit/business logic -- unchanged by the redesign)
+# Helper classes
 # ---------------------------------------------------------------------------
 
 class JulesApiError(Exception):
-    """Raised for any Jules REST API failure, with the real API error message
-    (parsed from the {"error": {...}} body per the API's documented error
-    format) rather than a generic urllib2 HTTP error string."""
 
     def __init__(self, message, status_code=None, api_status=None):
         Exception.__init__(self, message)
@@ -455,7 +403,6 @@ class JulesApiError(Exception):
 
 
 class ContextEntry(object):
-    """One captured HTTP transaction plus its operator-assigned role/notes."""
 
     def __init__(self, role, req_resp, notes=""):
         self.role = role
@@ -465,9 +412,6 @@ class ContextEntry(object):
 
 
 class ContextTableModel(AbstractTableModel):
-    """Backs the Captured Contexts table. Method/URL/Status are derived live
-    from the underlying Burp IHttpRequestResponse rather than cached, so the
-    table always reflects the real captured data."""
 
     COLUMN_NAMES = ["#", "Role", "Method", "URL", "Status", "Notes"]
 
@@ -532,11 +476,6 @@ class ContextTableModel(AbstractTableModel):
 
 
 class ZebraTableCellRenderer(DefaultTableCellRenderer):
-    """Shared base renderer: alternates row background for scanability and
-    applies the theme's default text color/padding to every cell. The
-    status/state renderers below extend this so specially-colored columns
-    get the same striping and spacing as the rest of the row instead of
-    standing apart from it."""
 
     def __init__(self, theme):
         DefaultTableCellRenderer.__init__(self)
@@ -556,8 +495,6 @@ class ZebraTableCellRenderer(DefaultTableCellRenderer):
 
 
 class StatusCellRenderer(ZebraTableCellRenderer):
-    """Color-codes the Status column by HTTP status class, the way Burp's own
-    tables do, so an operator can scan a busy bundle at a glance."""
 
     def getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, col):
         comp = ZebraTableCellRenderer.getTableCellRendererComponent(
@@ -575,7 +512,6 @@ class StatusCellRenderer(ZebraTableCellRenderer):
 
 
 class _ContextTableMouseListener(MouseAdapter):
-    """Right-click context menu + double-click-to-edit-notes for the table."""
 
     def __init__(self, extender):
         self.extender = extender
@@ -603,11 +539,10 @@ class _ContextTableMouseListener(MouseAdapter):
 
 
 class SessionEntry(object):
-    """One Jules session this extension is tracking. Holds its own status,
-    PR list, and activity log so any number of sessions can be monitored
-    independently side by side."""
+    """One Jules session this extension is tracking."""
 
     def __init__(self, session_id, title="", task_type=""):
+        self.lock = threading.Lock()
         self.session_id = session_id
         self.title = title or ""
         self.task_type = task_type or ""
@@ -615,12 +550,16 @@ class SessionEntry(object):
         self.web_url = None
         self.seen_pr_urls = set()
         self.seen_activity_ids = set()
-        self.activity_lines = []
+        self.activities_html_blocks = []
         self.last_refreshed = None
+        # UI Component references
+        self.tab_component = None
+        self.editor_pane = None
+        self.state_label = None
+        self.approve_btn = None
 
 
 class SessionTableModel(AbstractTableModel):
-    """Backs the Jules Sessions table. One row per tracked session."""
 
     COLUMN_NAMES = ["#", "Session ID", "Title", "State", "Updated"]
 
@@ -686,9 +625,6 @@ class SessionTableModel(AbstractTableModel):
 
 
 class SessionStateCellRenderer(ZebraTableCellRenderer):
-    """Color-codes the State column using the same semantic roles (info/
-    warning/success/danger/neutral) as the rest of the UI, so the sessions
-    table reads at a glance across many rows."""
 
     def getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, col):
         comp = ZebraTableCellRenderer.getTableCellRendererComponent(
@@ -706,8 +642,6 @@ class SessionStateCellRenderer(ZebraTableCellRenderer):
 
 
 class _SessionsTableMouseListener(MouseAdapter):
-    """Right-click context menu + double-click-to-view-log for the sessions
-    table, mirroring _ContextTableMouseListener's pattern."""
 
     def __init__(self, extender):
         self.extender = extender
@@ -723,7 +657,8 @@ class _SessionsTableMouseListener(MouseAdapter):
             table = self.extender._sessions_table
             row = table.rowAtPoint(e.getPoint())
             if row >= 0:
-                self.extender._do_view_activity_log(None)
+                entry = self.extender._session_table_model.entries[row]
+                self.extender._switch_to_session_tab(entry)
 
     def _maybe_popup(self, e):
         if e.isPopupTrigger():
@@ -796,7 +731,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         return "Siren Audit"
 
     def getUiComponent(self):
-        return self._main_panel
+        return self._root_tabbed_pane
 
     def extensionUnloaded(self):
         try:
@@ -814,13 +749,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
             pass
 
     # -----------------------------------------------------------------
-    # Small styled-component factories
-    #
-    # Every widget the UI builders below construct goes through one of
-    # these, so font/color/spacing choices live in one place instead of
-    # being repeated (and drifting) at each call site. None of these change
-    # what a widget IS -- a self._btn(...) is still a real JButton with a
-    # normal addActionListener/setEnabled/setToolTipText surface.
+    # UI Component Helpers
     # -----------------------------------------------------------------
 
     def _style_section(self, panel, title):
@@ -845,10 +774,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         return lbl
 
     def _field_row(self, label_text, control, hint=None):
-        """A label stacked above its control, with an optional muted hint
-        line underneath. Used for every settings field so labels don't
-        fight their inputs for width the way a forced two-column grid does
-        once a label runs long (e.g. the repository-source field below)."""
         row = JPanel(BorderLayout(0, 3))
         row.setOpaque(False)
         row.setBorder(BorderFactory.createEmptyBorder(4, 0, 4, 0))
@@ -969,12 +894,28 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         header.setPreferredSize(Dimension(header.getPreferredSize().width, 28))
 
     # -----------------------------------------------------------------
-    # UI construction
+    # Root UI Layout Construction
     # -----------------------------------------------------------------
 
     def _init_ui(self):
         self._theme = UITheme()
 
+        self._root_tabbed_pane = JTabbedPane()
+        self._root_tabbed_pane.setFont(self._theme.LABEL_BOLD_FONT)
+
+        # 1. Main Dashboard
+        self._root_tabbed_pane.addTab("Main Dashboard", self._build_dashboard_tab())
+
+        # 2. Sessions Pane (Tabbed per Session)
+        self._root_tabbed_pane.addTab("Sessions", self._build_sessions_tab())
+
+        # 3. Settings Tab
+        self._root_tabbed_pane.addTab("Settings", self._build_settings_tab())
+
+        # 4. Logs Tab
+        self._root_tabbed_pane.addTab("Logs", self._build_logs_tab())
+
+    def _build_dashboard_tab(self):
         content = JPanel()
         content.setLayout(BoxLayout(content, BoxLayout.Y_AXIS))
         content.setOpaque(True)
@@ -985,12 +926,10 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         content.add(Box.createVerticalStrut(12))
 
         panels = [
-            self._build_config_panel(),
             self._build_context_panel(),
             self._build_task_panel(),
             self._build_dispatch_panel(),
-            self._build_sessions_panel(),
-            self._build_log_panel(),
+            self._build_sessions_table_panel(),
         ]
         for panel in panels:
             panel.setAlignmentX(0.0)
@@ -1003,7 +942,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         scroll.setBorder(BorderFactory.createEmptyBorder())
         scroll.setOpaque(True)
         scroll.getViewport().setBackground(self._theme.base_bg)
-        self._main_panel = scroll
+        return scroll
 
     def _build_header(self):
         header = JPanel(BorderLayout())
@@ -1028,10 +967,26 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         header.add(title_box, BorderLayout.WEST)
         return header
 
+    def _build_settings_tab(self):
+        content = JPanel()
+        content.setLayout(BoxLayout(content, BoxLayout.Y_AXIS))
+        content.setOpaque(True)
+        content.setBackground(self._theme.base_bg)
+        content.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14))
+
+        config_panel = self._build_config_panel()
+        config_panel.setAlignmentX(0.0)
+        content.add(config_panel)
+
+        scroll = JScrollPane(content)
+        scroll.setBorder(BorderFactory.createEmptyBorder())
+        scroll.getViewport().setBackground(self._theme.base_bg)
+        return scroll
+
     def _build_config_panel(self):
         panel = JPanel()
         panel.setLayout(BoxLayout(panel, BoxLayout.Y_AXIS))
-        self._style_section(panel, "Jules REST API Connection")
+        self._style_section(panel, "Jules REST API Connection Settings")
 
         key_row = JPanel(BorderLayout(8, 0))
         key_row.setOpaque(False)
@@ -1211,11 +1166,11 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
         return panel
 
-    def _build_sessions_panel(self):
+    def _build_sessions_table_panel(self):
         panel = JPanel(BorderLayout(8, 8))
-        self._style_section(panel, "Jules Sessions")
+        self._style_section(panel, "Jules Sessions Summary")
 
-        caption = self._label("Tracks any number of sessions at once -- select a row to act on it.",
+        caption = self._label("Double click a row to switch to its dedicated interaction pane in the Sessions tab.",
                                muted=True)
         caption.setBorder(BorderFactory.createEmptyBorder(0, 2, 6, 0))
         panel.add(caption, BorderLayout.NORTH)
@@ -1233,7 +1188,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         self._sessions_table.addMouseListener(_SessionsTableMouseListener(self))
         self._sessions_table.getSelectionModel().addListSelectionListener(self._on_session_selection_changed)
 
-        table_scroll = self._scroll_of(self._sessions_table, Dimension(900, 180))
+        table_scroll = self._scroll_of(self._sessions_table, Dimension(900, 160))
         panel.add(table_scroll, BorderLayout.CENTER)
 
         south = JPanel()
@@ -1241,29 +1196,12 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         south.setOpaque(False)
         south.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0))
 
-        attach_row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2))
-        attach_row.setOpaque(False)
-        attach_row.add(self._label("Attach by ID:"))
-        self._attach_id_field = self._text_field(columns=14)
-        attach_row.add(self._attach_id_field)
-        attach_row.add(self._btn("Attach", self._do_attach_by_id, "secondary"))
-        attach_row.add(self._btn("Attach Existing...", self._do_attach_existing, "secondary"))
-        south.add(attach_row)
-
         toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
         toolbar.setOpaque(False)
-        self._approve_plan_btn = self._btn("Approve Plan", self._do_approve_plan, "success", enabled=False)
-        toolbar.add(self._approve_plan_btn)
         self._refresh_selected_btn = self._btn("Refresh Selected", self._do_refresh_selected_sessions,
                                                 "secondary", enabled=False)
         toolbar.add(self._refresh_selected_btn)
         toolbar.add(self._btn("Refresh All", self._do_refresh_all_sessions, "secondary"))
-        self._view_activity_btn = self._btn("View Activity Log", self._do_view_activity_log,
-                                             "secondary", enabled=False)
-        toolbar.add(self._view_activity_btn)
-        self._open_browser_btn = self._btn("Open in Browser", self._do_open_selected_in_browser,
-                                            "secondary", enabled=False)
-        toolbar.add(self._open_browser_btn)
         self._remove_session_btn = self._btn("Remove from List", self._do_remove_selected_sessions,
                                               "secondary", enabled=False)
         toolbar.add(self._remove_session_btn)
@@ -1281,9 +1219,92 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         panel.add(south, BorderLayout.SOUTH)
         return panel
 
+    def _build_sessions_tab(self):
+        panel = JPanel(BorderLayout(8, 8))
+        panel.setOpaque(True)
+        panel.setBackground(self._theme.base_bg)
+        panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+
+        # Top attach bar
+        attach_row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
+        attach_row.setOpaque(False)
+        attach_row.add(self._label("Attach by ID:"))
+        self._attach_id_field = self._text_field(columns=14)
+        attach_row.add(self._attach_id_field)
+        attach_row.add(self._btn("Attach", self._do_attach_by_id, "secondary"))
+        attach_row.add(self._btn("Attach Existing...", self._do_attach_existing, "secondary"))
+        panel.add(attach_row, BorderLayout.NORTH)
+
+        # Tabbed pane where each tab corresponds to a tracked session
+        self._sessions_tabbed_pane = JTabbedPane()
+        self._sessions_tabbed_pane.setFont(self._theme.LABEL_FONT)
+        panel.add(self._sessions_tabbed_pane, BorderLayout.CENTER)
+
+        return panel
+
+    def _build_session_pane_for_entry(self, entry):
+        panel = JPanel(BorderLayout(0, 8))
+        panel.setOpaque(True)
+        panel.setBackground(self._theme.base_bg)
+        panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+
+        # Control Bar for this specific session
+        ctrl_bar = JPanel(BorderLayout())
+        ctrl_bar.setOpaque(False)
+
+        info_box = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0))
+        info_box.setOpaque(False)
+        title_text = entry.title or "(untitled)"
+        info_box.add(self._label("Session ID: " + entry.session_id + "  |  " + title_text, bold=True))
+
+        state_lbl = self._label("State: " + entry.state, secondary=True)
+        entry.state_label = state_lbl
+        info_box.add(state_lbl)
+        ctrl_bar.add(info_box, BorderLayout.WEST)
+
+        action_box = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
+        action_box.setOpaque(False)
+
+        approve_btn = self._btn("Approve Plan", lambda e: self._do_approve_plan_for_entry(entry), "success",
+                                enabled=(entry.state == "AWAITING_PLAN_APPROVAL"))
+        entry.approve_btn = approve_btn
+        action_box.add(approve_btn)
+
+        action_box.add(self._btn("Send Follow-up", lambda e: self._do_send_followup_for_entry(entry), "secondary"))
+        action_box.add(self._btn("Refresh", lambda e: self._refresh_session(entry, False), "secondary"))
+        action_box.add(self._btn("Open in Browser", lambda e: self._do_open_entry_in_browser(entry), "secondary"))
+        action_box.add(self._btn("Remove Tab", lambda e: self._do_remove_session_entry(entry), "danger"))
+
+        ctrl_bar.add(action_box, BorderLayout.EAST)
+        panel.add(ctrl_bar, BorderLayout.NORTH)
+
+        # Interaction / Activity Pane
+        editor = JEditorPane()
+        editor.setEditable(False)
+        editor.setContentType("text/html")
+        editor.setBackground(self._theme.input_bg)
+        editor.setForeground(self._theme.text_primary)
+        editor.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8))
+        entry.editor_pane = editor
+
+        scroll = self._scroll_of(editor)
+        panel.add(scroll, BorderLayout.CENTER)
+
+        return panel
+
+    def _build_logs_tab(self):
+        content = JPanel(BorderLayout(8, 8))
+        content.setOpaque(True)
+        content.setBackground(self._theme.base_bg)
+        content.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14))
+
+        log_panel = self._build_log_panel()
+        content.add(log_panel, BorderLayout.CENTER)
+        return content
+
     def _build_log_panel(self):
         panel = JPanel(BorderLayout(4, 4))
-        self._style_section(panel, "Execution / Activity Log")
+        self._style_section(panel, "System Execution Log")
 
         self._log_area = WrappingTextPane()
         self._log_area.setEditable(False)
@@ -1291,7 +1312,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         self._log_area.setBackground(self._theme.input_bg)
         self._log_area.setForeground(self._theme.text_primary)
         self._log_area.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8))
-        scroll = self._scroll_of(self._log_area, Dimension(900, 220))
+        scroll = self._scroll_of(self._log_area)
         panel.add(scroll, BorderLayout.CENTER)
 
         btn_row = JPanel(FlowLayout(FlowLayout.RIGHT))
@@ -1395,7 +1416,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
             if not sid or self._session_table_model.find_by_id(sid) is not None:
                 continue
             entry = SessionEntry(sid, item.get("title", ""), item.get("task_type", ""))
-            self._session_table_model.add_entry(entry)
+            self._add_session_entry_to_ui(entry)
         self._update_sessions_summary_label()
 
     # -----------------------------------------------------------------
@@ -1427,7 +1448,8 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _make_add_custom_handler(self, responses):
         def handler(event):
             label = JOptionPane.showInputDialog(
-                self._main_panel, "Role / identity label for this capture:", "Custom role",
+                self._main_panel if hasattr(self, "_main_panel") else self._root_tabbed_pane,
+                "Role / identity label for this capture:", "Custom role",
                 JOptionPane.PLAIN_MESSAGE
             )
             if label:
@@ -1483,7 +1505,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_remove_selected_rows(self):
         rows = self._get_selected_rows()
         if not rows:
-            JOptionPane.showMessageDialog(self._main_panel, "Select one or more rows first.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select one or more rows first.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
         self._table_model.remove_rows(rows)
@@ -1493,7 +1515,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         if self._table_model.getRowCount() == 0:
             return
         confirm = JOptionPane.showConfirmDialog(
-            self._main_panel, "Remove all %d captured context(s)?" % self._table_model.getRowCount(),
+            self._root_tabbed_pane, "Remove all %d captured context(s)?" % self._table_model.getRowCount(),
             "Clear all", JOptionPane.YES_NO_OPTION
         )
         if confirm == JOptionPane.YES_OPTION:
@@ -1504,7 +1526,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_duplicate_selected(self):
         rows = self._get_selected_rows()
         if not rows:
-            JOptionPane.showMessageDialog(self._main_panel, "Select one or more rows first.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select one or more rows first.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
         for r in rows:
@@ -1515,7 +1537,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _edit_selected_notes(self):
         rows = self._get_selected_rows()
         if len(rows) != 1:
-            JOptionPane.showMessageDialog(self._main_panel, "Select exactly one row to edit its notes.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select exactly one row to edit its notes.",
                                            "Siren", JOptionPane.INFORMATION_MESSAGE)
             return
         self._edit_notes_dialog(rows[0])
@@ -1527,7 +1549,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         ta = self._text_area(6, 40, mono=False)
         ta.setText(entry.notes)
         result = JOptionPane.showConfirmDialog(
-            self._main_panel, self._scroll_of(ta), "Notes for context #%d (%s)" % (row + 1, entry.role),
+            self._root_tabbed_pane, self._scroll_of(ta), "Notes for context #%d (%s)" % (row + 1, entry.role),
             JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE
         )
         if result == JOptionPane.OK_OPTION:
@@ -1537,7 +1559,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _view_selected_entry(self):
         rows = self._get_selected_rows()
         if len(rows) != 1:
-            JOptionPane.showMessageDialog(self._main_panel, "Select exactly one row to view.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select exactly one row to view.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
         row = rows[0]
@@ -1576,7 +1598,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         split.setPreferredSize(Dimension(980, 520))
         split.setBorder(BorderFactory.createEmptyBorder())
         JOptionPane.showMessageDialog(
-            self._main_panel, split,
+            self._root_tabbed_pane, split,
             "Context #%d -- %s  (this local view is unredacted and untruncated)" % (row + 1, entry.role),
             JOptionPane.PLAIN_MESSAGE
         )
@@ -1803,9 +1825,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         return bundle_json_str, prompt_str
 
     def _get_dispatch_entries(self):
-        """Selected rows in Captured Contexts if any are selected, else all
-        rows. Shared by Dispatch, Send-as-Follow-up, and Preview so the three
-        always agree on what "the current bundle" means."""
         selected = list(self._context_table.getSelectedRows())
         if len(selected) > 0:
             idxs = sorted(selected)
@@ -1818,10 +1837,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     # -----------------------------------------------------------------
 
     def _run_async(self, worker_fn, on_success, on_error, on_finally=None):
-        """Runs worker_fn() on a background thread; on_success/on_error/
-        on_finally always run back on the EDT. worker_fn must not touch any
-        Swing component directly -- read what it needs from the EDT first
-        and pass plain values in via closure."""
 
         def _runner():
             try:
@@ -1860,9 +1875,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
             SwingUtilities.invokeLater(_do)
 
     def _classify_log_line_color(self, line_text):
-        """Best-effort color for one physical line of the log. Only ever
-        changes how a line is *painted* -- the text inserted is identical to
-        what the plain-JTextArea version of this method would have shown."""
         if "[-] " in line_text or "FAILED" in line_text:
             return self._theme.danger
         if "[+] " in line_text:
@@ -1874,10 +1886,6 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         return self._theme.text_primary
 
     def _append_log_block(self, block):
-        """Inserts a (possibly multi-line) log block into the styled log
-        document, coloring each physical line independently so a single
-        _log() call spanning a status line plus indented detail lines (e.g.
-        an activity update) still reads correctly line by line."""
         doc = self._log_area.getStyledDocument()
         for sub in block.split("\n"):
             attrs = SimpleAttributeSet()
@@ -1937,7 +1945,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_test_connection(self, event):
         api_key = self._get_api_key()
         if not api_key:
-            JOptionPane.showMessageDialog(self._main_panel, "Enter your Jules API key first.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Enter your Jules API key first.",
                                            "Missing API key", JOptionPane.WARNING_MESSAGE)
             return
         self._log("Testing connection to the Jules REST API...")
@@ -1947,19 +1955,19 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
         def on_success(_result):
             self._log("[+] Connection OK -- API key is valid.")
-            JOptionPane.showMessageDialog(self._main_panel, "Connected successfully.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Connected successfully.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
 
         def on_error(msg):
             self._log("[-] Connection test failed: %s" % msg)
-            JOptionPane.showMessageDialog(self._main_panel, msg, "Connection failed", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, msg, "Connection failed", JOptionPane.ERROR_MESSAGE)
 
         self._run_async(worker, on_success, on_error)
 
     def _do_fetch_sources(self, event):
         api_key = self._get_api_key()
         if not api_key:
-            JOptionPane.showMessageDialog(self._main_panel, "Enter your Jules API key first.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Enter your Jules API key first.",
                                            "Missing API key", JOptionPane.WARNING_MESSAGE)
             return
         self._log("Fetching connected sources from Jules...")
@@ -1993,13 +2001,13 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _dispatch_to_jules(self, event):
         api_key = self._get_api_key()
         if not api_key:
-            JOptionPane.showMessageDialog(self._main_panel, "Please provide a valid Jules API key.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Please provide a valid Jules API key.",
                                            "Missing API key", JOptionPane.ERROR_MESSAGE)
             return
 
         if not self._scope_checkbox.isSelected():
             JOptionPane.showMessageDialog(
-                self._main_panel,
+                self._root_tabbed_pane,
                 "Please confirm the scope/authorization checkbox before dispatching.\n\n"
                 "This mirrors Audit Gate 0 in AGENTS.md: confirm the target is in the program's "
                 "current published scope and that scripted/automated testing is permitted, before "
@@ -2011,7 +2019,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         entries_snapshot = self._get_dispatch_entries()
         if len(entries_snapshot) == 0:
             JOptionPane.showMessageDialog(
-                self._main_panel,
+                self._root_tabbed_pane,
                 "Capture at least one request first (right-click a request/response anywhere in "
                 "Burp -> Siren -> Add as...).",
                 "No contexts captured", JOptionPane.WARNING_MESSAGE
@@ -2065,20 +2073,20 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
                 return
             entry = SessionEntry(sid, resp.get("title", title), task_type)
             entry.state = resp.get("state", "UNKNOWN")
-            idx = self._session_table_model.add_entry(entry)
-            self._select_session_row(idx)
+            self._add_session_entry_to_ui(entry)
+            self._switch_to_session_tab(entry)
             self._log("[+] Created Jules session %s (state: %s)." % (sid, entry.state))
             self._persist_all_settings()
             self._persist_tracked_sessions()
             self._update_sessions_summary_label()
             if not self._auto_refresh_checkbox.isSelected():
-                self._auto_refresh_checkbox.setSelected(True)  # triggers listener -> starts timer, refreshes all
+                self._auto_refresh_checkbox.setSelected(True)
             else:
                 self._refresh_session(entry, True)
 
         def on_error(msg):
             self._log("[-] Dispatch failed: %s" % msg)
-            JOptionPane.showMessageDialog(self._main_panel, msg, "Jules API Error", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, msg, "Jules API Error", JOptionPane.ERROR_MESSAGE)
 
         def on_finally():
             self._set_dispatch_enabled(True)
@@ -2088,27 +2096,29 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_send_followup(self, event):
         rows = self._get_selected_session_rows()
         if len(rows) != 1:
-            JOptionPane.showMessageDialog(self._main_panel,
+            JOptionPane.showMessageDialog(self._root_tabbed_pane,
                                            "Select exactly one session in the table below to send a "
                                            "follow-up to.", "Siren", JOptionPane.INFORMATION_MESSAGE)
             return
         entry = self._session_table_model.entries[rows[0]]
+        self._do_send_followup_for_entry(entry)
 
+    def _do_send_followup_for_entry(self, entry):
         api_key = self._get_api_key()
         if not api_key:
-            JOptionPane.showMessageDialog(self._main_panel, "Please provide a valid Jules API key.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Please provide a valid Jules API key.",
                                            "Missing API key", JOptionPane.ERROR_MESSAGE)
             return
         if not self._scope_checkbox.isSelected():
             JOptionPane.showMessageDialog(
-                self._main_panel, "Please confirm the scope/authorization checkbox before dispatching.",
+                self._root_tabbed_pane, "Please confirm the scope/authorization checkbox before dispatching.",
                 "Scope not confirmed", JOptionPane.WARNING_MESSAGE
             )
             return
 
         entries_snapshot = self._get_dispatch_entries()
         if len(entries_snapshot) == 0:
-            JOptionPane.showMessageDialog(self._main_panel, "Capture at least one request first.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Capture at least one request first.",
                                            "No contexts captured", JOptionPane.WARNING_MESSAGE)
             return
 
@@ -2116,15 +2126,9 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         hypothesis_text = self._hypothesis_area.getText()
         redact_enabled = self._redact_checkbox.isSelected()
         max_body_chars = int(self._max_body_spinner.getValue())
-        total_contexts = self._table_model.getRowCount()
 
         self._set_followup_enabled(False)
-        if len(entries_snapshot) < total_contexts:
-            self._log("Preparing bundle from %d of %d captured context(s) (selected rows only) "
-                       "for session %s..." % (len(entries_snapshot), total_contexts, entry.session_id))
-        else:
-            self._log("Preparing bundle from %d captured context(s) for session %s..."
-                       % (len(entries_snapshot), entry.session_id))
+        self._log("Preparing follow-up bundle for session %s..." % entry.session_id)
 
         def worker():
             bundle_json_str, prompt_str = self._assemble_bundle_and_prompt(
@@ -2140,13 +2144,11 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
         def on_success(_result):
             self._log("[+] Bundle sent as a follow-up message to session %s." % entry.session_id)
-            self._log("    Jules replies asynchronously -- Refresh Selected / Auto-refresh will "
-                       "pick up its response.")
             self._refresh_session(entry, True)
 
         def on_error(msg):
             self._log("[-] Follow-up failed for session %s: %s" % (entry.session_id, msg))
-            JOptionPane.showMessageDialog(self._main_panel, msg, "Jules API Error", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, msg, "Jules API Error", JOptionPane.ERROR_MESSAGE)
 
         def on_finally():
             self._update_session_action_buttons()
@@ -2156,14 +2158,16 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_approve_plan(self, event):
         rows = self._get_selected_session_rows()
         if len(rows) != 1:
-            JOptionPane.showMessageDialog(self._main_panel, "Select exactly one session to approve its plan.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select exactly one session to approve its plan.",
                                            "Siren", JOptionPane.INFORMATION_MESSAGE)
             return
         entry = self._session_table_model.entries[rows[0]]
+        self._do_approve_plan_for_entry(entry)
 
+    def _do_approve_plan_for_entry(self, entry):
         api_key = self._get_api_key()
         if not api_key:
-            JOptionPane.showMessageDialog(self._main_panel, "Enter your Jules API key first.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Enter your Jules API key first.",
                                            "Missing API key", JOptionPane.WARNING_MESSAGE)
             return
 
@@ -2220,7 +2224,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
     def _do_refresh_all_sessions(self, event):
         if self._session_table_model.getRowCount() == 0:
-            JOptionPane.showMessageDialog(self._main_panel, "No sessions tracked yet.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "No sessions tracked yet.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
         self._log("Refreshing all %d tracked session(s)..." % self._session_table_model.getRowCount())
@@ -2229,73 +2233,192 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_refresh_selected_sessions(self, event):
         rows = self._get_selected_session_rows()
         if not rows:
-            JOptionPane.showMessageDialog(self._main_panel, "Select one or more sessions first.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select one or more sessions first.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
         for r in rows:
             self._refresh_session(self._session_table_model.entries[r], False)
 
     def _apply_session_update(self, entry, session_obj):
-        entry.state = session_obj.get("state", "UNKNOWN")
-        new_title = session_obj.get("title")
-        if new_title:
-            entry.title = new_title
-        url = session_obj.get("url")
-        if url:
-            entry.web_url = url
-        outputs = session_obj.get("outputs", []) or []
-        for out in outputs:
-            pr = out.get("pullRequest")
-            if pr and pr.get("url") and pr.get("url") not in entry.seen_pr_urls:
-                entry.seen_pr_urls.add(pr.get("url"))
-                self._log("[+] [%s] Pull request ready: %s -- %s"
-                          % (entry.session_id, pr.get("url"), pr.get("title", "")))
+        with entry.lock:
+            entry.state = session_obj.get("state", "UNKNOWN")
+            new_title = session_obj.get("title")
+            if new_title:
+                entry.title = new_title
+            url = session_obj.get("url")
+            if url:
+                entry.web_url = url
+            outputs = session_obj.get("outputs", []) or []
+            for out in outputs:
+                pr = out.get("pullRequest")
+                if pr and pr.get("url") and pr.get("url") not in entry.seen_pr_urls:
+                    entry.seen_pr_urls.add(pr.get("url"))
+                    self._log("[+] [%s] Pull request ready: %s -- %s"
+                              % (entry.session_id, pr.get("url"), pr.get("title", "")))
+
+        def _update_ui():
+            if entry.state_label:
+                entry.state_label.setText("State: " + entry.state)
+            if entry.approve_btn:
+                entry.approve_btn.setEnabled(entry.state == "AWAITING_PLAN_APPROVAL")
+
+        SwingUtilities.invokeLater(_update_ui)
 
     def _apply_new_activities(self, entry, activities):
-        for act in activities:
-            act_id = act.get("id") or act.get("name")
-            if not act_id or act_id in entry.seen_activity_ids:
-                continue
-            entry.seen_activity_ids.add(act_id)
-            formatted = self._format_activity(act)
-            if formatted:
-                entry.activity_lines.append(formatted)
-                self._log("[%s] %s" % (entry.session_id, formatted))
+        new_blocks = []
+        with entry.lock:
+            for act in activities:
+                act_id = act.get("id") or act.get("name")
+                if not act_id or act_id in entry.seen_activity_ids:
+                    continue
+                entry.seen_activity_ids.add(act_id)
+                html_block = self._format_activity_html(act)
+                if html_block:
+                    entry.activities_html_blocks.append(html_block)
+                    new_blocks.append(html_block)
 
-    def _format_activity(self, act):
+        if new_blocks:
+            def _update_pane():
+                self._update_session_editor_pane(entry)
+            SwingUtilities.invokeLater(_update_pane)
+
+    def _format_activity_html(self, act):
         originator = act.get("originator", "?")
         desc = act.get("description", "")
-        lines = ["  [activity] (%s) %s" % (originator, desc)]
+        blocks = []
 
-        if "agentMessaged" in act:
-            lines.append("      Jules: %s" % act["agentMessaged"].get("agentMessage", ""))
+        dark = self._theme.dark
+        text_fg = "#e2e8f7" if dark else "#1e293b"
+        border_color = "#334155" if dark else "#cbd5e1"
+
+        def _badge(label, bg_color):
+            return "<span style=\"background-color: " + bg_color + "; color: #ffffff; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 10px;\">[" + label + "]</span>"
+
         if "userMessaged" in act:
-            lines.append("      You: %s" % act["userMessaged"].get("userMessage", ""))
-        if "planGenerated" in act:
+            msg = act["userMessaged"].get("userMessage", "")
+            blocks.append(
+                "<div style=\"margin-bottom: 12px; padding: 8px; border-left: 4px solid #3b82f6; background-color: " +
+                ("#1e293b" if dark else "#f1f5f9") + ";\">" +
+                _badge("USER", "#2563eb") + " &nbsp; <b style=\"color:" + text_fg + ";\">You</b><br/><br/>" +
+                markdown_to_html(msg, dark) + "</div>"
+            )
+        elif "agentMessaged" in act:
+            msg = act["agentMessaged"].get("agentMessage", "")
+            blocks.append(
+                "<div style=\"margin-bottom: 12px; padding: 8px; border-left: 4px solid #10b981; background-color: " +
+                ("#132a22" if dark else "#f0fdf4") + ";\">" +
+                _badge("JULES AGENT", "#059669") + " &nbsp; <b style=\"color:" + text_fg + ";\">Jules</b><br/><br/>" +
+                markdown_to_html(msg, dark) + "</div>"
+            )
+        elif "planGenerated" in act:
             plan = act["planGenerated"].get("plan", {}) or {}
             steps = plan.get("steps", []) or []
-            lines.append("      Plan proposed (%d step(s)):" % len(steps))
+            step_html = []
             for step in steps:
                 idx = step.get("index", 0)
-                lines.append("        %d. %s -- %s" % (idx + 1, step.get("title", ""), step.get("description", "")))
-            lines.append("      (Awaiting your approval -- use the Approve Plan button if this looks right.)")
-        if "progressUpdated" in act:
+                step_html.append("<li style=\"margin-bottom: 4px;\"><b>Step " + str(idx + 1) + ": " + step.get("title", "") + "</b> -- " + step.get("description", "") + "</li>")
+            blocks.append(
+                "<div style=\"margin-bottom: 12px; padding: 8px; border-left: 4px solid #f59e0b; background-color: " +
+                ("#2a2015" if dark else "#fffbeb") + ";\">" +
+                _badge("PROPOSED PLAN", "#d97706") + " &nbsp; <b style=\"color:" + text_fg + ";\">Plan Proposed (" + str(len(steps)) + " steps)</b><br/>" +
+                "<ol style=\"margin-top: 6px;\">" + "".join(step_html) + "</ol>" +
+                "<i style=\"color: #94a3b8;\">(Awaiting your approval -- use the Approve Plan button above if this looks right.)</i></div>"
+            )
+        elif "progressUpdated" in act:
             pu = act["progressUpdated"]
-            lines.append("      Progress: %s -- %s" % (pu.get("title", ""), pu.get("description", "")))
-        if "sessionFailed" in act:
-            lines.append("      FAILED: %s" % act["sessionFailed"].get("reason", ""))
-        if "sessionCompleted" in act:
-            lines.append("      Session completed.")
+            title = pu.get("title", "")
+            pdesc = pu.get("description", "")
+            blocks.append(
+                "<div style=\"margin-bottom: 8px; padding: 6px; border-left: 4px solid #0ea5e9; background-color: " +
+                ("#0f2942" if dark else "#f0f9ff") + ";\">" +
+                _badge("PROGRESS", "#0284c7") + " &nbsp; <b>" + title + "</b> -- " + pdesc + "</div>"
+            )
+        elif "sessionFailed" in act:
+            reason = act["sessionFailed"].get("reason", "")
+            blocks.append(
+                "<div style=\"margin-bottom: 12px; padding: 8px; border-left: 4px solid #ef4444; background-color: " +
+                ("#3b1818" if dark else "#fef2f2") + ";\">" +
+                _badge("SESSION FAILED", "#dc2626") + " &nbsp; <b>Reason:</b> " + reason + "</div>"
+            )
+        elif "sessionCompleted" in act:
+            blocks.append(
+                "<div style=\"margin-bottom: 12px; padding: 8px; border-left: 4px solid #10b981; background-color: " +
+                ("#132a22" if dark else "#f0fdf4") + ";\">" +
+                _badge("COMPLETED", "#059669") + " &nbsp; <b>Session completed successfully.</b></div>"
+            )
 
         for art in (act.get("artifacts", []) or []):
             if "changeSet" in art:
                 gp = (art["changeSet"] or {}).get("gitPatch", {}) or {}
-                lines.append("      Change proposed: %s" % gp.get("suggestedCommitMessage", ""))
+                blocks.append(
+                    "<div style=\"margin-bottom: 8px; padding: 6px; border-left: 4px solid #8b5cf6; background-color: " +
+                    ("#22183b" if dark else "#f5f3ff") + ";\">" +
+                    _badge("ARTIFACT / CHANGE", "#7c3aed") + " &nbsp; Proposed Commit: <b>" + gp.get("suggestedCommitMessage", "") + "</b></div>"
+                )
             if "bashOutput" in art:
                 bo = art["bashOutput"] or {}
-                lines.append("      $ %s (exit %s)" % (bo.get("command", ""), bo.get("exitCode", "")))
+                blocks.append(
+                    "<div style=\"margin-bottom: 8px; padding: 6px; border-left: 4px solid #64748b; background-color: " +
+                    ("#1e293b" if dark else "#f8fafc") + ";\">" +
+                    _badge("COMMAND OUTPUT", "#475569") + " &nbsp; <code>$ " + bo.get("command", "") + "</code> (exit " + str(bo.get("exitCode", "")) + ")</div>"
+                )
 
-        return "\n".join(lines)
+        return "".join(blocks)
+
+    def _update_session_editor_pane(self, entry):
+        if not entry.editor_pane:
+            return
+        with entry.lock:
+            body_content = "".join(entry.activities_html_blocks)
+
+        bg = "#0f172a" if self._theme.dark else "#ffffff"
+        fg = "#e2e8f0" if self._theme.dark else "#0f172a"
+
+        full_html = (
+            "<html><head><style>" +
+            "body { font-family: sans-serif; font-size: 11px; background-color: " + bg + "; color: " + fg + "; margin: 0; padding: 4px; }" +
+            "h2, h3, h4 { font-family: sans-serif; }" +
+            "code, pre { font-family: monospace; }" +
+            "</style></head><body>" +
+            (body_content if body_content else "<i>No activities yet for this session...</i>") +
+            "</body></html>"
+        )
+        entry.editor_pane.setText(full_html)
+        entry.editor_pane.setCaretPosition(0)
+
+    def _add_session_entry_to_ui(self, entry):
+        idx = self._session_table_model.add_entry(entry)
+
+        def _create_tab():
+            pane = self._build_session_pane_for_entry(entry)
+            entry.tab_component = pane
+            tab_title = entry.title if entry.title else ("Session " + entry.session_id[:8])
+            self._sessions_tabbed_pane.addTab(tab_title, pane)
+            self._update_session_editor_pane(entry)
+
+        SwingUtilities.invokeLater(_create_tab)
+
+    def _switch_to_session_tab(self, entry):
+
+        def _do_switch():
+            self._root_tabbed_pane.setSelectedIndex(1) # Switch to Sessions tab
+            if entry.tab_component:
+                self._sessions_tabbed_pane.setSelectedComponent(entry.tab_component)
+
+        SwingUtilities.invokeLater(_do_switch)
+
+    def _do_remove_session_entry(self, entry):
+        row = self._session_table_model.index_of(entry)
+        if row >= 0:
+            self._session_table_model.remove_rows([row])
+
+        def _remove_tab():
+            if entry.tab_component:
+                self._sessions_tabbed_pane.remove(entry.tab_component)
+
+        SwingUtilities.invokeLater(_remove_tab)
+        self._update_sessions_summary_label()
+        self._persist_tracked_sessions()
 
     def _on_poll_tick(self, event):
         for entry in list(self._session_table_model.entries):
@@ -2338,11 +2461,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _update_session_action_buttons(self):
         rows = self._get_selected_session_rows()
         single = len(rows) == 1
-        entry = self._session_table_model.entries[rows[0]] if single else None
         self._followup_btn.setEnabled(single)
-        self._approve_plan_btn.setEnabled(single and entry.state == "AWAITING_PLAN_APPROVAL")
-        self._open_browser_btn.setEnabled(single and bool(entry.web_url))
-        self._view_activity_btn.setEnabled(single)
         self._refresh_selected_btn.setEnabled(len(rows) >= 1)
         self._remove_session_btn.setEnabled(len(rows) >= 1)
 
@@ -2394,13 +2513,13 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         if not sid:
             return
         if self._session_table_model.find_by_id(sid) is not None:
-            JOptionPane.showMessageDialog(self._main_panel, "Session %s is already tracked." % sid, "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Session %s is already tracked." % sid, "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
         entry = SessionEntry(sid)
-        idx = self._session_table_model.add_entry(entry)
         self._attach_id_field.setText("")
-        self._select_session_row(idx)
+        self._add_session_entry_to_ui(entry)
+        self._switch_to_session_tab(entry)
         self._log("Attached session %s." % sid)
         self._persist_tracked_sessions()
         self._update_sessions_summary_label()
@@ -2409,7 +2528,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_attach_existing(self, event):
         api_key = self._get_api_key()
         if not api_key:
-            JOptionPane.showMessageDialog(self._main_panel, "Enter your Jules API key first.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Enter your Jules API key first.",
                                            "Missing API key", JOptionPane.WARNING_MESSAGE)
             return
 
@@ -2419,7 +2538,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
         def on_success(sessions):
             if not sessions:
-                JOptionPane.showMessageDialog(self._main_panel, "No sessions found on your account yet.",
+                JOptionPane.showMessageDialog(self._root_tabbed_pane, "No sessions found on your account yet.",
                                                "Siren", JOptionPane.INFORMATION_MESSAGE)
                 return
             list_model = DefaultListModel()
@@ -2445,24 +2564,26 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
             jlist.setSelectionForeground(self._theme.accent_fg)
             scroll = self._scroll_of(jlist, Dimension(560, 280))
             result = JOptionPane.showConfirmDialog(
-                self._main_panel, scroll, "Select session(s) to attach", JOptionPane.OK_CANCEL_OPTION,
+                self._root_tabbed_pane, scroll, "Select session(s) to attach", JOptionPane.OK_CANCEL_OPTION,
                 JOptionPane.PLAIN_MESSAGE
             )
             if result != JOptionPane.OK_OPTION:
                 return
             added = 0
-            last_idx = -1
+            last_entry = None
             for i in list(jlist.getSelectedIndices()):
                 sid, title = rows[i]
                 if self._session_table_model.find_by_id(sid) is not None:
                     continue
                 entry = SessionEntry(sid, title)
-                last_idx = self._session_table_model.add_entry(entry)
+                self._add_session_entry_to_ui(entry)
                 self._refresh_session(entry, True)
+                last_entry = entry
                 added += 1
             if added:
                 self._log("Attached %d session(s)." % added)
-                self._select_session_row(last_idx)
+                if last_entry:
+                    self._switch_to_session_tab(last_entry)
                 self._persist_tracked_sessions()
             self._update_sessions_summary_label()
 
@@ -2474,64 +2595,41 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
     def _do_remove_selected_sessions(self, event):
         rows = self._get_selected_session_rows()
         if not rows:
-            JOptionPane.showMessageDialog(self._main_panel, "Select one or more sessions first.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Select one or more sessions first.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
-        self._session_table_model.remove_rows(rows)
-        self._update_session_action_buttons()
-        self._update_sessions_summary_label()
-        self._persist_tracked_sessions()
-        self._log("Stopped tracking %d session(s) (they still exist in Jules, just no longer shown here)."
-                  % len(rows))
+        entries_to_remove = [self._session_table_model.entries[r] for r in rows]
+        for entry in entries_to_remove:
+            self._do_remove_session_entry(entry)
 
-    def _do_view_activity_log(self, event):
-        rows = self._get_selected_session_rows()
-        if len(rows) != 1:
-            JOptionPane.showMessageDialog(self._main_panel, "Select exactly one session to view its log.",
-                                           "Siren", JOptionPane.INFORMATION_MESSAGE)
-            return
-        entry = self._session_table_model.entries[rows[0]]
-        text = "\n\n".join(entry.activity_lines) if entry.activity_lines else "(no activity yet -- try Refresh)"
-        area = self._text_area(26, 80, mono=True)
-        area.setText(text)
-        area.setEditable(False)
-        area.setCaretPosition(0)
-        header = entry.session_id
-        if entry.title:
-            header += "  --  " + entry.title
-        if entry.task_type:
-            header += "  [" + entry.task_type + "]"
-        JOptionPane.showMessageDialog(self._main_panel, self._scroll_of(area), "Activity Log -- " + header,
-                                       JOptionPane.PLAIN_MESSAGE)
-
-    def _do_open_selected_in_browser(self, event):
-        rows = self._get_selected_session_rows()
-        if len(rows) != 1:
-            return
-        entry = self._session_table_model.entries[rows[0]]
+    def _do_open_entry_in_browser(self, entry):
         if not entry.web_url:
-            JOptionPane.showMessageDialog(self._main_panel,
-                                           "No web URL yet for this session -- try Refresh Selected first.",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane,
+                                           "No web URL yet for this session -- try Refreshing first.",
                                            "Siren", JOptionPane.INFORMATION_MESSAGE)
             return
         self._open_url_in_browser(entry.web_url)
 
     def _show_sessions_table_popup(self, component, x, y):
         menu = JPopupMenu()
-        menu.add(JMenuItem("View Activity Log", actionPerformed=lambda e: self._do_view_activity_log(None)))
+        menu.add(JMenuItem("Switch to Session Tab", actionPerformed=lambda e: self._do_switch_to_selected_table_session()))
         menu.add(JMenuItem("Refresh Selected", actionPerformed=lambda e: self._do_refresh_selected_sessions(None)))
-        menu.add(JMenuItem("Approve Plan", actionPerformed=lambda e: self._do_approve_plan(None)))
-        menu.add(JMenuItem("Open in Browser", actionPerformed=lambda e: self._do_open_selected_in_browser(None)))
         menu.addSeparator()
         menu.add(JMenuItem("Send Bundle as Follow-up", actionPerformed=lambda e: self._do_send_followup(None)))
         menu.addSeparator()
         menu.add(JMenuItem("Remove from List", actionPerformed=lambda e: self._do_remove_selected_sessions(None)))
         menu.show(component, x, y)
 
+    def _do_switch_to_selected_table_session(self):
+        rows = self._get_selected_session_rows()
+        if len(rows) == 1:
+            entry = self._session_table_model.entries[rows[0]]
+            self._switch_to_session_tab(entry)
+
     def _do_preview_bundle(self, event):
         entries_snapshot = self._get_dispatch_entries()
         if not entries_snapshot:
-            JOptionPane.showMessageDialog(self._main_panel, "Capture at least one request first.", "Siren",
+            JOptionPane.showMessageDialog(self._root_tabbed_pane, "Capture at least one request first.", "Siren",
                                            JOptionPane.INFORMATION_MESSAGE)
             return
 
@@ -2551,14 +2649,14 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         area.setEditable(False)
         area.setCaretPosition(0)
         JOptionPane.showMessageDialog(
-            self._main_panel, self._scroll_of(area, Dimension(960, 560)),
+            self._root_tabbed_pane, self._scroll_of(area, Dimension(960, 560)),
             "Prompt Preview (%d context(s)) -- nothing has been sent yet" % len(entries_snapshot),
             JOptionPane.PLAIN_MESSAGE
         )
 
     def _do_copy_prompt(self, event):
         if not self._last_prompt:
-            JOptionPane.showMessageDialog(self._main_panel,
+            JOptionPane.showMessageDialog(self._root_tabbed_pane,
                                            "Nothing to copy yet -- use Preview Bundle or dispatch first.",
                                            "Siren", JOptionPane.INFORMATION_MESSAGE)
             return
@@ -2568,13 +2666,13 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
     def _do_export_bundle(self, event):
         if not self._last_bundle_json:
-            JOptionPane.showMessageDialog(self._main_panel,
+            JOptionPane.showMessageDialog(self._root_tabbed_pane,
                                            "Nothing to export yet -- use Preview Bundle or dispatch first.",
                                            "Siren", JOptionPane.INFORMATION_MESSAGE)
             return
         chooser = JFileChooser()
         chooser.setSelectedFile(File("siren-bundle-%d.json" % long(time.time())))
-        result = chooser.showSaveDialog(self._main_panel)
+        result = chooser.showSaveDialog(self._root_tabbed_pane)
         if result == JFileChooser.APPROVE_OPTION:
             f = chooser.getSelectedFile()
             try:
@@ -2585,7 +2683,7 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
                     fh.close()
                 self._log("[+] Bundle exported to %s" % f.getAbsolutePath())
             except Exception as e:
-                JOptionPane.showMessageDialog(self._main_panel, "Failed to write file: %s" % str(e),
+                JOptionPane.showMessageDialog(self._root_tabbed_pane, "Failed to write file: %s" % str(e),
                                                "Error", JOptionPane.ERROR_MESSAGE)
 
     # -----------------------------------------------------------------
