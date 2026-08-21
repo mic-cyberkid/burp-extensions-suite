@@ -7,6 +7,202 @@ Compatible with Jython 2.7 and Python 3.x environments.
 import re
 import json
 
+class NoiseFilter(object):
+    """
+    Filter for stripping telemetry, static assets, and noisy endpoints
+    from HTTP request sequences.
+    """
+    STATIC_EXTENSIONS = (
+        '.js', '.css', '.woff', '.woff2', '.ttf', '.eot', '.svg',
+        '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.map'
+    )
+
+    DEFAULT_NOISE_PATTERNS = [
+        r'/api/metrics',
+        r'/ping',
+        r'/analytics',
+        r'/telemetry',
+        r'/log',
+        r'/health',
+        r'\.(js|css|woff2?|ttf|svg|png|jpg|jpeg|gif|ico)(\?.*)?$'
+    ]
+
+    @staticmethod
+    def should_filter(url_or_path, mime_type='', custom_regex_pattern=''):
+        """
+        Returns True if request should be filtered out as noise/telemetry/static asset.
+        """
+        if not url_or_path:
+            return False
+
+        clean_url = url_or_path.split('?')[0].split('#')[0].lower()
+
+        # Check static extensions
+        for ext in NoiseFilter.STATIC_EXTENSIONS:
+            if clean_url.endswith(ext):
+                return True
+
+        # Check MIME type
+        if mime_type:
+            mime = mime_type.lower()
+            if any(m in mime for m in ['script', 'css', 'font', 'image', 'svg']):
+                return True
+
+        # Check default noise patterns
+        for pattern in NoiseFilter.DEFAULT_NOISE_PATTERNS:
+            try:
+                if re.search(pattern, url_or_path, re.IGNORECASE):
+                    return True
+            except Exception:
+                pass
+
+        # Check custom user regex
+        if custom_regex_pattern:
+            try:
+                if re.search(custom_regex_pattern, url_or_path, re.IGNORECASE):
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+
+class CorrelationEngine(object):
+    """
+    Engine for analyzing response body/headers of Step N and mapping dynamically
+    generated tokens, UUIDs, or JSON parameters to Step N+1 request parameters.
+    """
+
+    TOKEN_KEYS = [
+        'token', 'access_token', 'id_token', 'csrf', 'csrftoken', 'csrf_token',
+        'xsrf_token', 'auth_token', 'session', 'session_id', 'uuid', 'id',
+        'user_id', 'account_id', 'order_id', 'item_id', 'cart_id', 'transaction_id'
+    ]
+
+    UUID_REGEX = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    JWT_REGEX = r'eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*'
+
+    @staticmethod
+    def extract_tokens(response_headers_str, response_body_str):
+        """
+        Extracts key-value token mappings from response headers and response body.
+        Returns a dictionary: {token_key: token_value}
+        """
+        token_map = {}
+        if not response_headers_str and not response_body_str:
+            return token_map
+
+        # 1. Extract from Headers (Cookies & Custom Auth Headers)
+        if response_headers_str:
+            lines = response_headers_str.splitlines()
+            for line in lines:
+                if ':' in line:
+                    header, value = line.split(':', 1)
+                    header_lower = header.strip().lower()
+                    val_str = value.strip()
+
+                    if header_lower == 'set-cookie':
+                        cookie_part = val_str.split(';')[0]
+                        if '=' in cookie_part:
+                            ck_key, ck_val = cookie_part.split('=', 1)
+                            ck_key = ck_key.strip()
+                            ck_val = ck_val.strip()
+                            if ck_key and ck_val:
+                                token_map[ck_key] = ck_val
+                                token_map['Cookie:' + ck_key] = ck_val
+
+                    elif any(k in header_lower for k in ['token', 'auth', 'csrf', 'xsrf', 'jwt']):
+                        token_map[header.strip()] = val_str
+
+        # 2. Extract from JSON Response Body
+        if response_body_str and (response_body_str.strip().startswith('{') or response_body_str.strip().startswith('[')):
+            try:
+                json_obj = json.loads(response_body_str.strip())
+                CorrelationEngine._extract_json_keys(json_obj, token_map)
+            except Exception:
+                pass
+
+        # 3. Regex Fallback for UUIDs and JWTs
+        if response_body_str:
+            uuids = re.findall(CorrelationEngine.UUID_REGEX, response_body_str)
+            if uuids and 'uuid' not in token_map:
+                token_map['uuid'] = uuids[0]
+
+            jwts = re.findall(CorrelationEngine.JWT_REGEX, response_body_str)
+            if jwts and 'jwt' not in token_map:
+                token_map['jwt'] = jwts[0]
+
+        return token_map
+
+    @staticmethod
+    def _extract_json_keys(obj, token_map):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                key_str = str(k)
+                if isinstance(v, (dict, list)):
+                    CorrelationEngine._extract_json_keys(v, token_map)
+                elif not isinstance(v, (dict, list)):
+                    val_str = str(v)
+                    k_lower = key_str.lower()
+                    if k_lower in CorrelationEngine.TOKEN_KEYS or k_lower.endswith('_id') or k_lower.endswith('_token') or 'id' in k_lower or 'token' in k_lower or 'csrf' in k_lower:
+                        token_map[key_str] = val_str
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (dict, list)):
+                    CorrelationEngine._extract_json_keys(item, token_map)
+
+    @staticmethod
+    def apply_tokens(request_str, token_map):
+        """
+        Updates request string (headers and body) with extracted tokens in token_map.
+        """
+        if not request_str or not token_map:
+            return request_str
+
+        modified_req = request_str
+
+        for key, val in token_map.items():
+            if not key or not val:
+                continue
+
+            # 1. Update Cookie header
+            if key.startswith('Cookie:'):
+                cookie_name = key.split(':', 1)[1]
+                pattern = re.escape(cookie_name) + r'=[^;\r\n]*'
+                replacement = cookie_name + '=' + str(val)
+                modified_req = re.sub(pattern, replacement, modified_req)
+
+            # 2. Update JSON Body
+            elif '{' in modified_req and key in modified_req:
+                pattern_str = r'("' + re.escape(key) + r'"\s*:\s*)("[^"]*"|\d+|true|false|null)'
+                replacement = r'\1"' + str(val) + r'"'
+                modified_req = re.sub(pattern_str, replacement, modified_req)
+
+            # 3. Update URL Query or Form Parameters
+            if key + '=' in modified_req:
+                pattern = re.escape(key) + r'=[^&\s\r\n]*'
+                replacement = key + '=' + str(val)
+                modified_req = re.sub(pattern, replacement, modified_req)
+
+            # 4. Update Header Lines
+            if key.lower() in ['authorization', 'x-csrf-token', 'csrf-token', 'x-api-key'] or 'token' in key.lower():
+                lines = modified_req.splitlines()
+                new_lines = []
+                for line in lines:
+                    if ':' in line:
+                        h_name = line.split(':', 1)[0].strip()
+                        if h_name.lower() == key.lower():
+                            if h_name.lower() == 'authorization' and not str(val).lower().startswith('bearer '):
+                                line = h_name + ': Bearer ' + str(val)
+                            else:
+                                line = h_name + ': ' + str(val)
+                    new_lines.append(line)
+                delimiter = '\r\n' if '\r\n' in request_str else '\n'
+                modified_req = delimiter.join(new_lines)
+
+        return modified_req
+
+
 class LogicBreakerEngine(object):
     """
     Engine for generating sequence permutations in multi-step workflows

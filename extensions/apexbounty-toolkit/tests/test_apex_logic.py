@@ -5,11 +5,76 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '../src'))
 
 from ApexToolkitLogic import (
+    NoiseFilter,
+    CorrelationEngine,
     LogicBreakerEngine,
     LLMFuzzerEngine,
     RaceOrchestratorEngine,
     PrivilegeMatrixEngine
 )
+
+
+class TestNoiseFilter(unittest.TestCase):
+    def test_should_filter_static_extensions(self):
+        self.assertTrue(NoiseFilter.should_filter("https://example.com/app.js"))
+        self.assertTrue(NoiseFilter.should_filter("/styles/main.css"))
+        self.assertTrue(NoiseFilter.should_filter("/assets/logo.svg"))
+        self.assertFalse(NoiseFilter.should_filter("https://example.com/api/v1/checkout"))
+
+    def test_should_filter_mime_type(self):
+        self.assertTrue(NoiseFilter.should_filter("/api/data", mime_type="application/javascript"))
+        self.assertTrue(NoiseFilter.should_filter("/api/data", mime_type="text/css"))
+        self.assertFalse(NoiseFilter.should_filter("/api/data", mime_type="application/json"))
+
+    def test_should_filter_default_noise_patterns(self):
+        self.assertTrue(NoiseFilter.should_filter("https://example.com/api/metrics"))
+        self.assertTrue(NoiseFilter.should_filter("https://example.com/ping"))
+        self.assertTrue(NoiseFilter.should_filter("https://example.com/analytics"))
+
+    def test_should_filter_custom_regex(self):
+        self.assertTrue(NoiseFilter.should_filter("/v1/ignore_me", custom_regex_pattern=r'/ignore_me'))
+        self.assertFalse(NoiseFilter.should_filter("/v1/keep_me", custom_regex_pattern=r'/ignore_me'))
+
+
+class TestCorrelationEngine(unittest.TestCase):
+    def test_extract_tokens(self):
+        headers = (
+            "HTTP/1.1 200 OK\r\n"
+            "Set-Cookie: session_id=xyz123; Path=/\r\n"
+            "X-CSRF-Token: csrf_secret_abc\r\n"
+        )
+        body = '{"user_id": 456, "token": "jwt_token_val", "uuid": "123e4567-e89b-12d3-a456-426614174000"}'
+
+        tokens = CorrelationEngine.extract_tokens(headers, body)
+
+        self.assertEqual(tokens.get('session_id'), 'xyz123')
+        self.assertEqual(tokens.get('X-CSRF-Token'), 'csrf_secret_abc')
+        self.assertEqual(tokens.get('user_id'), '456')
+        self.assertEqual(tokens.get('token'), 'jwt_token_val')
+        self.assertEqual(tokens.get('uuid'), '123e4567-e89b-12d3-a456-426614174000')
+
+    def test_apply_tokens(self):
+        raw_req = (
+            "POST /api/action?user_id=1 HTTP/1.1\r\n"
+            "Host: example.com\r\n"
+            "Authorization: Bearer old_token\r\n"
+            "Cookie: session_id=old_session\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            '{"token": "old_token", "user_id": "1"}'
+        )
+        token_map = {
+            'user_id': '999',
+            'token': 'new_jwt_value',
+            'authorization': 'Bearer new_jwt_value',
+            'Cookie:session_id': 'new_session'
+        }
+
+        updated_req = CorrelationEngine.apply_tokens(raw_req, token_map)
+
+        self.assertIn('user_id=999', updated_req)
+        self.assertIn('Cookie: session_id=new_session', updated_req)
+        self.assertIn('"token": "new_jwt_value"', updated_req)
+        self.assertIn('Authorization: Bearer new_jwt_value', updated_req)
 
 class TestLogicBreakerEngine(unittest.TestCase):
     def test_permutations_generation(self):
