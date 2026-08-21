@@ -8,8 +8,9 @@ import threading
 import json
 import urllib2
 from java.awt import BorderLayout, FlowLayout, GridBagLayout, GridBagConstraints, Insets, Dimension
+from java.util.concurrent import CopyOnWriteArrayList
 from javax.swing import (
-    JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
+    JPanel, JButton, JLabel, JTextField, JPasswordField, JCheckBox, JTable, JScrollPane, JSplitPane,
     JComboBox, JSeparator, SwingUtilities, JOptionPane, ListSelectionModel
 )
 from javax.swing.table import DefaultTableModel
@@ -23,7 +24,7 @@ class LLMFuzzerTab(object):
         self.current_http_service = None
         self.current_request_bytes = None
         self.extracted_params = []
-        self.fuzz_results = [] # stores (payload, status, length, req_resp_obj)
+        self.fuzz_results = CopyOnWriteArrayList() # Thread-safe storage
 
         self._init_ui()
 
@@ -33,12 +34,19 @@ class LLMFuzzerTab(object):
         # Top Configuration Bar
         config_panel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 5))
 
-        config_panel.add(JLabel("LLM API Key:"))
-        self.txt_api_key = JTextField("", 18)
+        self.chk_enable_llm = JCheckBox("Enable External LLM Call", False)
+        config_panel.add(self.chk_enable_llm)
+
+        config_panel.add(JLabel("API Key:"))
+        self.txt_api_key = JPasswordField("", 14)
         config_panel.add(self.txt_api_key)
 
-        config_panel.add(JLabel("API Endpoint:"))
-        self.txt_api_url = JTextField("https://api.openai.com/v1/chat/completions", 25)
+        config_panel.add(JLabel("Model:"))
+        self.txt_model = JTextField("gpt-3.5-turbo", 10)
+        config_panel.add(self.txt_model)
+
+        config_panel.add(JLabel("Endpoint:"))
+        self.txt_api_url = JTextField("https://api.openai.com/v1/chat/completions", 22)
         config_panel.add(self.txt_api_url)
 
         config_panel.add(JLabel("Target Param:"))
@@ -50,7 +58,6 @@ class LLMFuzzerTab(object):
         config_panel.add(self.btn_fuzz)
 
         # Main View: Left = Request Editor, Right = Fuzz Results & Viewer
-        # Burp Message Editor for base request
         self.req_editor = self.callbacks.createMessageEditor(None, True)
 
         req_panel = JPanel(BorderLayout())
@@ -112,29 +119,31 @@ class LLMFuzzerTab(object):
         else:
             param_name = self.extracted_params[selected_param_idx]['name']
 
-        api_key = self.txt_api_key.getText().strip()
+        api_key = str(self.txt_api_key.getText()).strip()
+        model_name = self.txt_model.getText().strip()
         api_url = self.txt_api_url.getText().strip()
+        use_external_llm = self.chk_enable_llm.isSelected()
 
         self.btn_fuzz.setEnabled(False)
         self.results_table_model.setRowCount(0)
-        self.fuzz_results = []
+        self.fuzz_results = CopyOnWriteArrayList()
 
         # Run async thread for LLM API call & fuzzing
         t = threading.Thread(
             target=self._fuzz_worker_thread,
-            args=(req_bytes, param_name, api_key, api_url)
+            args=(req_bytes, param_name, api_key, model_name, api_url, use_external_llm)
         )
         t.daemon = True
         t.start()
 
-    def _fuzz_worker_thread(self, req_bytes, param_name, api_key, api_url):
+    def _fuzz_worker_thread(self, req_bytes, param_name, api_key, model_name, api_url, use_external_llm):
         try:
             raw_req = self.helpers.bytesToString(req_bytes)
             payloads = []
 
-            # Call LLM API if key provided, else fallback to built-in smart fuzz payloads
-            if api_key:
-                payloads = self._call_llm_api(param_name, raw_req, api_key, api_url)
+            # Call LLM API if explicitly enabled and key provided
+            if use_external_llm and api_key:
+                payloads = self._call_llm_api(param_name, raw_req, api_key, model_name, api_url)
 
             if not payloads:
                 # Fallback smart security test payloads
@@ -161,21 +170,28 @@ class LLMFuzzerTab(object):
                         status = str(resp_info.getStatusCode())
                         length = str(len(resp.getResponse()))
 
-                    self.fuzz_results.append((payload, status, length, resp))
+                    self.fuzz_results.add((payload, status, length, resp))
 
                     def add_row(p=payload, s=status, l=length):
                         self.results_table_model.addRow([p, s, l])
 
                     SwingUtilities.invokeLater(add_row)
                 except Exception as ex:
-                    pass
+                    status = "Error: " + str(ex)
+                    length = "0"
+                    self.fuzz_results.add((payload, status, length, None))
+
+                    def add_err_row(p=payload, s=status, l=length):
+                        self.results_table_model.addRow([p, s, l])
+
+                    SwingUtilities.invokeLater(add_err_row)
 
         finally:
             def reenable():
                 self.btn_fuzz.setEnabled(True)
             SwingUtilities.invokeLater(reenable)
 
-    def _call_llm_api(self, param_name, raw_req, api_key, api_url):
+    def _call_llm_api(self, param_name, raw_req, api_key, model_name, api_url):
         prompt = LLMFuzzerEngine.build_prompt(param_name, raw_req)
         try:
             headers = {
@@ -183,7 +199,7 @@ class LLMFuzzerTab(object):
                 "Authorization": "Bearer " + api_key
             }
             body_data = {
-                "model": "gpt-3.5-turbo",
+                "model": model_name if model_name else "gpt-3.5-turbo",
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],

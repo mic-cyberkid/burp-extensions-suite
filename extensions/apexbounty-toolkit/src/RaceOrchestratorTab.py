@@ -8,7 +8,7 @@ using CountDownLatch.
 import threading
 import time
 from java.awt import BorderLayout, FlowLayout, Color, Component
-from java.util.concurrent import CountDownLatch
+from java.util.concurrent import CountDownLatch, CopyOnWriteArrayList
 from javax.swing import (
     JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
     JSeparator, SwingUtilities, JOptionPane
@@ -27,7 +27,7 @@ class AnomalyCellRenderer(DefaultTableCellRenderer):
         flag_val = str(table.getModel().getValueAt(row, 4))   # Anomaly Flag column
 
         if not isSelected:
-            if "500" in status_val or "Server Error" in flag_val:
+            if "500" in status_val or "Server Error" in flag_val or "ERROR" in status_val:
                 cell.setBackground(Color(255, 210, 210)) # Soft Red
                 cell.setForeground(Color.BLACK)
             elif "Yes" in flag_val or "Deviating" in flag_val:
@@ -49,7 +49,7 @@ class RaceOrchestratorTab(object):
         self.service_b = None
         self.bytes_b = None
 
-        self.race_results = [] # stores (target_label, thread_id, status, length, time_ms, is_anomaly, note, resp_obj)
+        self.race_results = CopyOnWriteArrayList() # Thread-safe storage for multi-threaded appends
 
         self._init_ui()
 
@@ -67,7 +67,7 @@ class RaceOrchestratorTab(object):
         control_panel.add(lbl_title)
         control_panel.add(JSeparator(1))
 
-        control_panel.add(JLabel("Threads per Endpoint:"))
+        control_panel.add(JLabel("Threads per Endpoint (max 100):"))
         self.txt_threads = JTextField("10", 5)
         control_panel.add(self.txt_threads)
 
@@ -145,6 +145,7 @@ class RaceOrchestratorTab(object):
 
         try:
             threads_per_endpoint = int(self.txt_threads.getText().strip())
+            threads_per_endpoint = min(max(1, threads_per_endpoint), 100) # Sane cap [1, 100]
             delay_ms = int(self.txt_delay.getText().strip())
         except ValueError:
             JOptionPane.showMessageDialog(self.panel, "Threads and Delay must be valid integers.")
@@ -152,7 +153,7 @@ class RaceOrchestratorTab(object):
 
         self.btn_run_race.setEnabled(False)
         self.results_table_model.setRowCount(0)
-        self.race_results = []
+        self.race_results = CopyOnWriteArrayList()
 
         # Spawn background orchestrator thread
         t = threading.Thread(
@@ -170,6 +171,18 @@ class RaceOrchestratorTab(object):
 
             baseline_lengths = set()
 
+            # Pre-flight baseline request to capture expected content length for anomaly classification
+            try:
+                resp_base_a = self.callbacks.makeHttpRequest(self.service_a, req_a_bytes)
+                if resp_base_a and resp_base_a.getResponse():
+                    baseline_lengths.add(len(resp_base_a.getResponse()))
+                if self.service_b and req_b_bytes:
+                    resp_base_b = self.callbacks.makeHttpRequest(self.service_b, req_b_bytes)
+                    if resp_base_b and resp_base_b.getResponse():
+                        baseline_lengths.add(len(resp_base_b.getResponse()))
+            except Exception:
+                pass
+
             def worker_task(target_name, service, req_bytes, thread_id):
                 # Wait for synchronized release signal
                 start_latch.await()
@@ -186,17 +199,26 @@ class RaceOrchestratorTab(object):
                         status = resp_info.getStatusCode()
                         length = len(resp.getResponse())
 
-                    is_anomaly, note = RaceOrchestratorEngine.classify_race_response(status, length)
+                    is_anomaly, note = RaceOrchestratorEngine.classify_race_response(status, length, baseline_lengths)
                     flag_str = "Yes" if is_anomaly else "No"
 
-                    self.race_results.append((target_name, str(thread_id), str(status), str(length), flag_str, note, resp))
+                    self.race_results.add((target_name, str(thread_id), str(status), str(length), flag_str, note, resp))
 
                     def add_row(t_name=target_name, tid=str(thread_id), st=str(status), l=str(length), flg=flag_str, nt=note):
                         self.results_table_model.addRow([t_name, tid, st, l, flg, nt])
 
                     SwingUtilities.invokeLater(add_row)
                 except Exception as ex:
-                    pass
+                    status_str = "ERROR"
+                    len_str = "0"
+                    flag_str = "Yes"
+                    note_str = "Error: " + str(ex)
+                    self.race_results.add((target_name, str(thread_id), status_str, len_str, flag_str, note_str, None))
+
+                    def add_err_row(t_name=target_name, tid=str(thread_id), st=status_str, l=len_str, flg=flag_str, nt=note_str):
+                        self.results_table_model.addRow([t_name, tid, st, l, flg, nt])
+
+                    SwingUtilities.invokeLater(add_err_row)
                 finally:
                     done_latch.countDown()
 

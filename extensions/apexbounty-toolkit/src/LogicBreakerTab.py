@@ -6,6 +6,7 @@ Implements sequence builder, permutation generation, and attack execution.
 
 import threading
 from java.awt import BorderLayout, FlowLayout, Dimension, GridBagLayout, GridBagConstraints, Insets
+from java.util.concurrent import CopyOnWriteArrayList
 from javax.swing import (
     JPanel, JButton, JLabel, JTable, JScrollPane, JSplitPane,
     JSeparator, SwingUtilities, JOptionPane, ListSelectionModel
@@ -17,7 +18,7 @@ class LogicBreakerTab(object):
     def __init__(self, callbacks, helpers):
         self.callbacks = callbacks
         self.helpers = helpers
-        self.recorded_requests = [] # list of dicts: {'http_service', 'request_bytes', 'method', 'host', 'path'}
+        self.recorded_requests = CopyOnWriteArrayList() # Thread-safe storage for sequence steps
         self.is_attacking = False
 
         self._init_ui()
@@ -34,12 +35,16 @@ class LogicBreakerTab(object):
             lbl_title.setFont(font.deriveFont(font.getStyle() | 1, 14.0)) # Bold, 14pt
 
         self.btn_attack = JButton("Run Permutation Attack", actionPerformed=self._on_run_attack)
+        self.btn_stop = JButton("Stop Attack", actionPerformed=self._on_stop_attack)
+        self.btn_stop.setEnabled(False)
+
         self.btn_clear = JButton("Clear Sequence", actionPerformed=self._on_clear_sequence)
         self.lbl_status = JLabel("Sequence Count: 0")
 
         control_panel.add(lbl_title)
         control_panel.add(JSeparator(1)) # Vertical
         control_panel.add(self.btn_attack)
+        control_panel.add(self.btn_stop)
         control_panel.add(self.btn_clear)
         control_panel.add(self.lbl_status)
 
@@ -92,7 +97,7 @@ class LogicBreakerTab(object):
             'path': path,
             'name': method + " " + path
         }
-        self.recorded_requests.append(step_dict)
+        self.recorded_requests.add(step_dict)
 
         step_num = len(self.recorded_requests)
 
@@ -103,10 +108,14 @@ class LogicBreakerTab(object):
         SwingUtilities.invokeLater(update_ui)
 
     def _on_clear_sequence(self, event):
-        self.recorded_requests = []
+        self.recorded_requests = CopyOnWriteArrayList()
         self.seq_table_model.setRowCount(0)
         self.results_table_model.setRowCount(0)
         self.lbl_status.setText("Sequence Count: 0")
+
+    def _on_stop_attack(self, event):
+        self.is_attacking = False
+        self.btn_stop.setEnabled(False)
 
     def _on_run_attack(self, event):
         if not self.recorded_requests:
@@ -116,8 +125,28 @@ class LogicBreakerTab(object):
         if self.is_attacking:
             return
 
+        # Pre-flight scope safety check across all recorded steps
+        out_of_scope_urls = []
+        for req in self.recorded_requests:
+            req_info = self.helpers.analyzeRequest(req['http_service'], req['request_bytes'])
+            url = req_info.getUrl()
+            if url and not self.callbacks.isInScope(url):
+                out_of_scope_urls.append(str(url))
+
+        if out_of_scope_urls:
+            confirm = JOptionPane.showConfirmDialog(
+                self.panel,
+                "Warning: " + str(len(out_of_scope_urls)) + " target request(s) are OUT OF SCOPE.\nDo you want to proceed anyway?",
+                "Scope Safety Warning",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE
+            )
+            if confirm != JOptionPane.YES_OPTION:
+                return
+
         self.is_attacking = True
         self.btn_attack.setEnabled(False)
+        self.btn_stop.setEnabled(True)
         self.results_table_model.setRowCount(0)
 
         # Run attack in background thread to avoid freezing Burp UI
@@ -127,9 +156,12 @@ class LogicBreakerTab(object):
 
     def _execute_attack_thread(self):
         try:
-            permutations = LogicBreakerEngine.generate_permutations(self.recorded_requests)
+            permutations = LogicBreakerEngine.generate_permutations(list(self.recorded_requests))
 
             for perm in permutations:
+                if not self.is_attacking:
+                    break
+
                 name = perm['name']
                 desc = perm['description']
                 seq = perm['sequence']
@@ -140,6 +172,9 @@ class LogicBreakerTab(object):
 
                 # Execute sequence steps in order
                 for step in seq:
+                    if not self.is_attacking:
+                        break
+
                     service = step['http_service']
                     req_b = step['request_bytes']
 
@@ -159,6 +194,7 @@ class LogicBreakerTab(object):
 
         finally:
             self.is_attacking = False
-            def reenable_btn():
+            def reenable_ui():
                 self.btn_attack.setEnabled(True)
-            SwingUtilities.invokeLater(reenable_btn)
+                self.btn_stop.setEnabled(False)
+            SwingUtilities.invokeLater(reenable_ui)

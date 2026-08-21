@@ -6,6 +6,7 @@ Automated BOLA/IDOR detection via background session replays across 4 configured
 
 import threading
 from java.awt import BorderLayout, FlowLayout, GridLayout, Color, Component, Dimension
+from java.util.concurrent import CopyOnWriteArrayList
 from javax.swing import (
     JPanel, JButton, JLabel, JCheckBox, JTextArea, JScrollPane, JTable, JSplitPane,
     JSeparator, SwingUtilities, BorderFactory, JTabbedPane
@@ -34,7 +35,7 @@ class StatusColorCellRenderer(DefaultTableCellRenderer):
             elif "301" in val_str or "302" in val_str:
                 cell.setBackground(Color(255, 255, 200)) # Soft Yellow
                 cell.setForeground(Color.BLACK)
-            elif "500" in val_str or "502" in val_str:
+            elif "500" in val_str or "502" in val_str or "Error" in val_str:
                 cell.setBackground(Color(255, 220, 180)) # Soft Orange
                 cell.setForeground(Color.BLACK)
             else:
@@ -50,7 +51,7 @@ class PrivilegeMatrixTab(object):
         self.helpers = helpers
         self.is_enabled = False
 
-        self.matrix_records = [] # stores dicts with request/response info for each role
+        self.matrix_records = CopyOnWriteArrayList() # Thread-safe collection for background thread appends
 
         self._init_ui()
 
@@ -67,11 +68,13 @@ class PrivilegeMatrixTab(object):
             lbl_title.setFont(font.deriveFont(font.getStyle() | 1, 14.0))
 
         self.chk_enable = JCheckBox("Enable Background Matrix Replay", False, actionPerformed=self._on_toggle_enabled)
+        self.chk_state_changing = JCheckBox("Replay State-Changing Methods (POST/PUT/DELETE)", False)
         self.btn_clear = JButton("Clear Matrix Log", actionPerformed=self._on_clear_log)
 
         control_panel.add(lbl_title)
         control_panel.add(JSeparator(1))
         control_panel.add(self.chk_enable)
+        control_panel.add(self.chk_state_changing)
         control_panel.add(self.btn_clear)
 
         # Role Header Configuration Grid (4 roles: Admin, User A, User B, Unauth)
@@ -134,11 +137,12 @@ class PrivilegeMatrixTab(object):
 
     def _on_clear_log(self, event):
         self.matrix_table_model.setRowCount(0)
-        self.matrix_records = []
+        self.matrix_records = CopyOnWriteArrayList()
 
     def handle_proxy_request(self, message_info):
         """
         Called when a request passes through Burp Proxy.
+        Enforces target scope checks and HTTP method safety filtering before background replay.
         """
         if not self.is_enabled:
             return
@@ -154,6 +158,15 @@ class PrivilegeMatrixTab(object):
         if not url:
             return
 
+        # Target scope check: only replay in-scope requests
+        if not self.callbacks.isInScope(url):
+            return
+
+        method = req_info.getMethod()
+        # Idempotency safety: filter state-changing methods unless explicitly enabled
+        if method and method.upper() in ['POST', 'PUT', 'DELETE', 'PATCH'] and not self.chk_state_changing.isSelected():
+            return
+
         path = url.getPath()
         # Filter static assets
         if any(path.endswith(ext) for ext in ['.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2']):
@@ -162,7 +175,7 @@ class PrivilegeMatrixTab(object):
         # Spawn background thread to replay across roles
         t = threading.Thread(
             target=self._replay_matrix_thread,
-            args=(http_service, req_bytes, req_info.getMethod(), path)
+            args=(http_service, req_bytes, method, path)
         )
         t.daemon = True
         t.start()
@@ -196,7 +209,7 @@ class PrivilegeMatrixTab(object):
                     role_responses[role_name] = None
                 role_statuses[role_name] = status_str
             except Exception as ex:
-                role_statuses[role_name] = "Err"
+                role_statuses[role_name] = "Error: " + str(ex)
                 role_responses[role_name] = None
 
         record = {
@@ -205,7 +218,7 @@ class PrivilegeMatrixTab(object):
             'statuses': role_statuses,
             'responses': role_responses
         }
-        self.matrix_records.append(record)
+        self.matrix_records.add(record)
 
         def add_row():
             self.matrix_table_model.addRow([
