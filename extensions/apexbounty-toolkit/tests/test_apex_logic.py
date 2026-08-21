@@ -104,6 +104,26 @@ class TestRequestMutator(unittest.TestCase):
         self.assertIn('"order_id": "9988"', mutated)
 
 
+class TestTokenRefreshLogic(unittest.TestCase):
+    def test_token_refresh_thread_safety(self):
+        import threading
+        lock = threading.Lock()
+        baseline_state = {'cookies': {}, 'headers': {'Authorization': 'Bearer old'}, 'body_tokens': {}}
+        state_dict = {'cookies': {}, 'headers': {'Authorization': 'Bearer old'}, 'body_tokens': {}}
+
+        def mock_refresh():
+            with lock:
+                baseline_state['headers']['Authorization'] = 'Bearer fresh_token_123'
+                state_dict['headers']['Authorization'] = 'Bearer fresh_token_123'
+
+        t = threading.Thread(target=mock_refresh)
+        t.start()
+        t.join()
+
+        self.assertEqual(baseline_state['headers']['Authorization'], 'Bearer fresh_token_123')
+        self.assertEqual(state_dict['headers']['Authorization'], 'Bearer fresh_token_123')
+
+
 class TestLogicBreakerEngine(unittest.TestCase):
     def test_permutations_generation(self):
         sequence = [

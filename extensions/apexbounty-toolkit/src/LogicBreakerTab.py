@@ -322,6 +322,7 @@ class LogicBreakerTab(object):
 
         self.junk_filter = JunkFilter()
         self.baseline_manager = BaselineManager(callbacks)
+        self.token_refresh_lock = threading.Lock()
 
         self.capture_manager = FlowCaptureManager(
             callbacks, helpers, self.junk_filter,
@@ -405,6 +406,7 @@ class LogicBreakerTab(object):
         btn_down_seq = JButton("Move Down", actionPerformed=self._on_move_seq_down)
         btn_edit_seq = JButton("Edit Request", actionPerformed=self._on_edit_seq_step)
         btn_reset_seq = JButton("Reset to Baseline", actionPerformed=self._on_reset_to_baseline)
+        btn_mark_auth = JButton("Set Token Generator", actionPerformed=self._on_mark_auth_generator)
 
         lbl_seq_search = JLabel("Search:")
         self.txt_seq_search = JTextField(12)
@@ -416,6 +418,7 @@ class LogicBreakerTab(object):
         seq_toolbar.add(btn_up_seq)
         seq_toolbar.add(btn_down_seq)
         seq_toolbar.add(btn_edit_seq)
+        seq_toolbar.add(btn_mark_auth)
         seq_toolbar.add(btn_reset_seq)
         seq_toolbar.add(JSeparator(1))
         seq_toolbar.add(lbl_seq_search)
@@ -554,6 +557,9 @@ class LogicBreakerTab(object):
         def update():
             self.seq_table_model.setRowCount(0)
             for idx, step in enumerate(self.recorded_requests):
+                notes = step.get('notes', '')
+                if step.get('is_auth_generator'):
+                    notes = "[Token Generator] " + notes
                 self.seq_table_model.addRow([
                     str(idx + 1),
                     step.get('source', 'Manual'),
@@ -563,9 +569,22 @@ class LogicBreakerTab(object):
                     step.get('status', 'N/A'),
                     step.get('length', 'N/A'),
                     step.get('content_type', ''),
-                    step.get('notes', '')
+                    notes
                 ])
         SwingUtilities.invokeLater(update)
+
+    def _on_mark_auth_generator(self, event):
+        selected_row = self.seq_table.getSelectedRow()
+        if selected_row < 0:
+            JOptionPane.showMessageDialog(self.panel, "Please select a step to set as Token Generator.")
+            return
+
+        model_idx = self.seq_table.convertRowIndexToModel(selected_row)
+        for idx, step in enumerate(self.recorded_requests):
+            step['is_auth_generator'] = (idx == model_idx)
+
+        self._refresh_sequence_table()
+        JOptionPane.showMessageDialog(self.panel, "Step #" + str(model_idx + 1) + " set as Token Generator.")
 
     def _on_delete_seq_steps(self, event):
         selected_rows = self.seq_table.getSelectedRows()
@@ -899,6 +918,18 @@ class LogicBreakerTab(object):
                             final_len = str(len(resp.getResponse()))
                             final_resp_body = to_str(resp.getResponse())
 
+                            # Automatic token refresh if 401/403 received on non-auth generator step
+                            if resp_info.getStatusCode() in (401, 403) and not step.get('is_auth_generator'):
+                                self._refresh_auth_tokens(baseline_state, state_dict)
+                                req_b_retry = RequestMutator.apply_state(req_b, state_dict)
+                                retry_resp = self.callbacks.makeHttpRequest(service, req_b_retry)
+                                if retry_resp and retry_resp.getResponse():
+                                    retry_info = self.helpers.analyzeResponse(retry_resp.getResponse())
+                                    final_status = str(retry_info.getStatusCode())
+                                    final_len = str(len(retry_resp.getResponse()))
+                                    final_resp_body = to_str(retry_resp.getResponse())
+                                    resp = retry_resp
+
                             # Extract tokens for next step carry-forward
                             extracted = TokenExtractor.extract_tokens(resp.getResponse())
                             state_dict['cookies'].update(extracted.get('cookies', {}))
@@ -953,6 +984,30 @@ class LogicBreakerTab(object):
                     self.progress_bar.setValue(100)
                     self.progress_bar.setString("Permutation attack complete!")
             SwingUtilities.invokeLater(reenable_btn)
+
+    def _refresh_auth_tokens(self, baseline_state, state_dict):
+        with self.token_refresh_lock:
+            auth_step = None
+            for step in self.recorded_requests:
+                if step.get('is_auth_generator'):
+                    auth_step = step
+                    break
+            if not auth_step and self.recorded_requests:
+                auth_step = self.recorded_requests[0]
+
+            if auth_step and auth_step.get('http_service') and auth_step.get('request_bytes'):
+                try:
+                    resp = self.callbacks.makeHttpRequest(auth_step['http_service'], auth_step['request_bytes'])
+                    if resp and resp.getResponse():
+                        extracted = TokenExtractor.extract_tokens(resp.getResponse())
+                        baseline_state['cookies'].update(extracted.get('cookies', {}))
+                        baseline_state['headers'].update(extracted.get('headers', {}))
+                        baseline_state['body_tokens'].update(extracted.get('body_tokens', {}))
+                        state_dict['cookies'].update(extracted.get('cookies', {}))
+                        state_dict['headers'].update(extracted.get('headers', {}))
+                        state_dict['body_tokens'].update(extracted.get('body_tokens', {}))
+                except Exception:
+                    pass
 
     # --------------------------------------------------------------------------
     # Search / Filters & Results Actions
