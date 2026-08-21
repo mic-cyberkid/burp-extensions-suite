@@ -1477,15 +1477,42 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
 
     def _safe_method(self, req_resp):
         try:
-            info = self._helpers.analyzeRequest(req_resp)
+            raw_req = req_resp.getRequest() if hasattr(req_resp, "getRequest") else None
+            http_service = req_resp.getHttpService() if hasattr(req_resp, "getHttpService") else None
+            if http_service is not None and raw_req is not None:
+                info = self._helpers.analyzeRequest(http_service, raw_req)
+            else:
+                info = self._helpers.analyzeRequest(req_resp)
             return info.getMethod()
         except Exception:
             return "?"
 
     def _safe_url(self, req_resp):
         try:
-            info = self._helpers.analyzeRequest(req_resp)
-            return str(info.getUrl())
+            raw_req = req_resp.getRequest() if hasattr(req_resp, "getRequest") else None
+            http_service = req_resp.getHttpService() if hasattr(req_resp, "getHttpService") else None
+            if http_service is not None and raw_req is not None:
+                info = self._helpers.analyzeRequest(http_service, raw_req)
+            else:
+                info = self._helpers.analyzeRequest(req_resp)
+            try:
+                return str(info.getUrl())
+            except Exception:
+                # Fallback if getUrl() fails due to missing service info in IRequestInfo
+                if http_service is not None:
+                    protocol = "https" if http_service.getProtocol() == "https" else "http"
+                    host = http_service.getHost()
+                    port = http_service.getPort()
+                    port_str = "" if (protocol == "https" and port == 443) or (protocol == "http" and port == 80) else (":%d" % port)
+                    headers = info.getHeaders()
+                    path = "/"
+                    if headers and len(headers) > 0:
+                        first_line = headers[0]
+                        parts = first_line.split(" ")
+                        if len(parts) > 1:
+                            path = parts[1]
+                    return "%s://%s%s%s" % (protocol, host, port_str, path)
+                return "?"
         except Exception:
             return "?"
 
@@ -1729,11 +1756,33 @@ class BurpExtender(IBurpExtender, IContextMenuFactory, ITab, IExtensionStateList
         result = {"index": index, "role": entry.role, "notes": entry.notes or ""}
 
         try:
-            info_req = self._helpers.analyzeRequest(req_resp)
+            raw_req = req_resp.getRequest() if hasattr(req_resp, "getRequest") else None
+            http_service = req_resp.getHttpService() if hasattr(req_resp, "getHttpService") else None
+            if http_service is not None and raw_req is not None:
+                info_req = self._helpers.analyzeRequest(http_service, raw_req)
+            else:
+                info_req = self._helpers.analyzeRequest(req_resp)
+
             method = info_req.getMethod()
-            url = str(info_req.getUrl())
+            url = "?"
+            try:
+                url = str(info_req.getUrl())
+            except Exception:
+                if http_service is not None:
+                    protocol = "https" if http_service.getProtocol() == "https" else "http"
+                    host = http_service.getHost()
+                    port = http_service.getPort()
+                    port_str = "" if (protocol == "https" and port == 443) or (protocol == "http" and port == 80) else (":%d" % port)
+                    headers = info_req.getHeaders()
+                    path = "/"
+                    if headers and len(headers) > 0:
+                        first_line = headers[0]
+                        parts = first_line.split(" ")
+                        if len(parts) > 1:
+                            path = parts[1]
+                    url = "%s://%s%s%s" % (protocol, host, port_str, path)
+
             req_headers = self._parse_header_lines(info_req.getHeaders())
-            raw_req = req_resp.getRequest()
             req_body = ""
             if raw_req is not None:
                 body_bytes = raw_req[info_req.getBodyOffset():]
