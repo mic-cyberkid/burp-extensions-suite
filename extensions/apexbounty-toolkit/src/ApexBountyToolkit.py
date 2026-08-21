@@ -131,6 +131,32 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
         item_logic_breaker.addActionListener(send_to_logic_breaker)
         menu_list.add(item_logic_breaker)
 
+        # 1b. Action: Start Logic Breaker Flow from here
+        item_start_flow = JMenuItem("Start Logic Breaker Flow from here")
+
+        def start_flow_from_here(e):
+            self.logic_breaker_tab.start_flow_from_request(
+                first_message.getHttpService(),
+                first_message.getRequest()
+            )
+            self.main_tabbed_pane.setSelectedComponent(self.logic_breaker_tab.get_component())
+
+        item_start_flow.addActionListener(start_flow_from_here)
+        menu_list.add(item_start_flow)
+
+        # 1c. Action: Add to current Logic Breaker sequence
+        item_add_seq = JMenuItem("Add to current Logic Breaker sequence")
+
+        def add_to_seq(e):
+            for msg in selected_messages:
+                self.logic_breaker_tab.add_request(
+                    msg.getHttpService(),
+                    msg.getRequest()
+                )
+
+        item_add_seq.addActionListener(add_to_seq)
+        menu_list.add(item_add_seq)
+
         # 2. Action: Send to LLM Context Fuzzer
         item_llm_fuzzer = JMenuItem("Send to LLM Fuzzer")
 
