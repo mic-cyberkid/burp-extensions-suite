@@ -13,7 +13,7 @@ from javax.swing import (
 )
 from javax.swing.table import DefaultTableModel, DefaultTableCellRenderer
 
-from ApexToolkitLogic import PrivilegeMatrixEngine
+from ApexToolkitLogic import PrivilegeMatrixEngine, ScopeEngine
 
 class StatusColorCellRenderer(DefaultTableCellRenderer):
     """
@@ -174,7 +174,7 @@ class PrivilegeMatrixTab(object):
 
         # P0 Scope Check Gate
         if self.chk_scope_only.isSelected():
-            if not self.callbacks.isInScope(url):
+            if not ScopeEngine.is_in_scope(self.callbacks, url):
                 return
 
         method = req_info.getMethod()

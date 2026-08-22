@@ -8,11 +8,11 @@ pre-flight warnings, token correlation replay, and per-step result logging.
 import threading
 from java.awt import BorderLayout, FlowLayout, Dimension
 from javax.swing import (
-    JPanel, JButton, JLabel, JTable, JScrollPane, JSplitPane,
+    JPanel, JButton, JLabel, JCheckBox, JTable, JScrollPane, JSplitPane,
     JSeparator, SwingUtilities, JOptionPane, ListSelectionModel
 )
 from javax.swing.table import DefaultTableModel
-from ApexToolkitLogic import LogicBreakerEngine, CorrelationEngine
+from ApexToolkitLogic import LogicBreakerEngine, CorrelationEngine, ScopeEngine
 
 class LogicBreakerTab(object):
     def __init__(self, callbacks, helpers):
@@ -40,6 +40,7 @@ class LogicBreakerTab(object):
         self.btn_attack = JButton("Run Permutation Attack", actionPerformed=self._on_run_attack)
         self.btn_stop = JButton("Stop Attack", actionPerformed=self._on_stop_attack)
         self.btn_stop.setEnabled(False)
+        self.chk_scope_only = JCheckBox("In-Scope Only", True)
         self.btn_clear = JButton("Clear Sequence", actionPerformed=self._on_clear_sequence)
 
         self.btn_toggle_step = JButton("Toggle Include", actionPerformed=self._on_toggle_step)
@@ -52,6 +53,7 @@ class LogicBreakerTab(object):
         control_panel.add(JSeparator(1)) # Vertical
         control_panel.add(self.btn_attack)
         control_panel.add(self.btn_stop)
+        control_panel.add(self.chk_scope_only)
         control_panel.add(self.btn_clear)
         control_panel.add(JSeparator(1))
         control_panel.add(self.btn_toggle_step)
@@ -253,6 +255,24 @@ class LogicBreakerTab(object):
                     # Dynamic Token Propagation across steps
                     updated_req_str = CorrelationEngine.apply_token_updates(req_str, running_tokens)
                     updated_req_b = self.helpers.stringToBytes(updated_req_str)
+
+                    # Target Scope Gate Check per step
+                    if self.chk_scope_only.isSelected():
+                        step_target = service if service else step.get('host', '')
+                        if not ScopeEngine.is_in_scope(self.callbacks, step_target):
+                            status = "SKIPPED (Out of Scope)"
+                            length = "0"
+                            final_status = status
+                            final_length = length
+                            step_logs.append({
+                                'step_name': step.get('name', 'Step ' + str(idx + 1)),
+                                'status': status,
+                                'length': length,
+                                'req_bytes': updated_req_b,
+                                'resp_bytes': None
+                            })
+                            step_summary_parts.append("S" + str(idx + 1) + ": SKIPPED")
+                            continue
 
                     try:
                         resp = self.callbacks.makeHttpRequest(service, updated_req_b)

@@ -12,6 +12,11 @@ try:
 except ImportError:
     import urllib as urllib_parse
 
+try:
+    from java.net import URL
+except ImportError:
+    URL = None
+
 
 def _update_content_length(headers, new_body_len):
     """
@@ -29,6 +34,61 @@ def _update_content_length(headers, new_body_len):
 
     delimiter = '\r\n' if '\r\n' in headers else '\n'
     return delimiter.join(lines)
+
+
+class ScopeEngine(object):
+    """
+    Engine for checking target scope enforcement across Burp extensions.
+    """
+
+    @staticmethod
+    def is_in_scope(callbacks, target):
+        """
+        Checks if a given target (java.net.URL, IHttpService, host string, or URL string)
+        is within Burp's configured target scope.
+        Returns True if in scope or if scope checking is not available/callbacks is None.
+        """
+        if callbacks is None:
+            return True
+
+        if target is None or target == "":
+            return True
+
+        if not hasattr(callbacks, 'isInScope'):
+            return True
+
+        try:
+            # Case 1: Target is a java.net.URL object
+            if URL is not None and isinstance(target, URL):
+                return bool(callbacks.isInScope(target))
+
+            # Case 2: Target is an IHttpService object
+            if hasattr(target, 'getHost'):
+                host = target.getHost()
+                protocol = target.getProtocol() if hasattr(target, 'getProtocol') else 'https'
+                port = target.getPort() if hasattr(target, 'getPort') else (443 if protocol == 'https' else 80)
+                target_str = protocol + "://" + host + ":" + str(port)
+            else:
+                target_str = str(target).strip()
+
+            if not target_str:
+                return True
+
+            if not (target_str.startswith('http://') or target_str.startswith('https://')):
+                target_str = 'https://' + target_str
+
+            if URL is not None:
+                try:
+                    java_url = URL(target_str)
+                    return bool(callbacks.isInScope(java_url))
+                except Exception:
+                    pass
+
+            # Fallback for CLI Python 3 tests or string mock callbacks
+            return bool(callbacks.isInScope(target_str))
+
+        except Exception:
+            return True
 
 
 class LogicBreakerEngine(object):
