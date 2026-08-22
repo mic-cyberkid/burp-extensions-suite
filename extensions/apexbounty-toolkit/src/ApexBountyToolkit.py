@@ -5,7 +5,7 @@ ApexBountyToolkit.py - Main Entry Point for ApexBountyToolkit Burp Extension.
 This module implements the core Burp Suite extension interfaces:
 - IBurpExtender: Main initialization and registration with Burp Suite.
 - ITab: Registers a custom top-level tab ("Apex Toolkit") in Burp Suite's UI.
-- IHttpListener: Listens to HTTP traffic passing through Burp Proxy for automated privilege matrix replays.
+- IHttpListener: Listens to HTTP traffic passing through Burp Proxy for automated privilege matrix replays and flow capture.
 - IContextMenuFactory: Registers right-click context menu options in Proxy, Repeater, and Target tabs.
 
 Jython 2.7 Compatible.
@@ -65,7 +65,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
         # Register top-level tab with Burp Suite UI
         callbacks.addSuiteTab(self)
 
-        # Register HTTP listener to capture in-scope proxy requests for Privilege Matrix
+        # Register HTTP listener to capture in-scope proxy requests for Privilege Matrix & Flow Capture
         callbacks.registerHttpListener(self)
 
         # Register right-click Context Menu factory for sending requests to tools
@@ -93,12 +93,14 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
     # --------------------------------------------------------------------------
     def processHttpMessage(self, toolFlag, isRequest, messageInfo):
         """
-        Listens to HTTP traffic in Burp. Re-routes request messages from Proxy
-        to the Dynamic Privilege Matrix for background privilege matrix replay.
+        Listens to HTTP traffic in Burp. Re-routes request/response messages from Proxy
+        to the Dynamic Privilege Matrix and Logic Breaker Flow Capture.
         """
-        # Listen only to request messages coming through Burp Proxy (toolFlag == 4 / TOOL_PROXY)
-        if isRequest and toolFlag == self.callbacks.TOOL_PROXY:
-            self.privilege_matrix_tab.handle_proxy_request(messageInfo)
+        if toolFlag == self.callbacks.TOOL_PROXY:
+            if isRequest:
+                self.privilege_matrix_tab.handle_proxy_request(messageInfo)
+            else:
+                self.logic_breaker_tab.handle_proxy_message(messageInfo)
 
     # --------------------------------------------------------------------------
     # IContextMenuFactory Implementation
@@ -117,21 +119,34 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
 
         first_message = selected_messages[0]
 
-        # 1. Action: Send to Logic Breaker
-        item_logic_breaker = JMenuItem("Send to Logic Breaker")
+        # 1. Action: Start Flow Capture from this request
+        item_start_flow = JMenuItem("Start Flow Capture from this request")
 
-        def send_to_logic_breaker(e):
-            self.logic_breaker_tab.add_request(
+        def start_flow_capture(e):
+            self.logic_breaker_tab.start_flow_with_anchor(
                 first_message.getHttpService(),
                 first_message.getRequest()
             )
-            # Switch focus to Apex Toolkit -> Logic Breaker tab
             self.main_tabbed_pane.setSelectedComponent(self.logic_breaker_tab.get_component())
 
-        item_logic_breaker.addActionListener(send_to_logic_breaker)
-        menu_list.add(item_logic_breaker)
+        item_start_flow.addActionListener(start_flow_capture)
+        menu_list.add(item_start_flow)
 
-        # 2. Action: Send to LLM Context Fuzzer
+        # 2. Action: Add to Logic Breaker Flow
+        item_add_to_flow = JMenuItem("Add to Logic Breaker Flow")
+
+        def add_to_flow(e):
+            for msg in selected_messages:
+                self.logic_breaker_tab.add_request(
+                    msg.getHttpService(),
+                    msg.getRequest()
+                )
+            self.main_tabbed_pane.setSelectedComponent(self.logic_breaker_tab.get_component())
+
+        item_add_to_flow.addActionListener(add_to_flow)
+        menu_list.add(item_add_to_flow)
+
+        # 3. Action: Send to LLM Context Fuzzer
         item_llm_fuzzer = JMenuItem("Send to LLM Fuzzer")
 
         def send_to_llm_fuzzer(e):
@@ -144,7 +159,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
         item_llm_fuzzer.addActionListener(send_to_llm_fuzzer)
         menu_list.add(item_llm_fuzzer)
 
-        # 3. Action: Send to Race Orchestrator A
+        # 4. Action: Send to Race Orchestrator A
         item_race_a = JMenuItem("Send to Race Orchestrator (Request A)")
 
         def send_to_race_a(e):
@@ -157,7 +172,7 @@ class BurpExtender(IBurpExtender, ITab, IHttpListener, IContextMenuFactory):
         item_race_a.addActionListener(send_to_race_a)
         menu_list.add(item_race_a)
 
-        # 4. Action: Send to Race Orchestrator B
+        # 5. Action: Send to Race Orchestrator B
         item_race_b = JMenuItem("Send to Race Orchestrator (Request B)")
 
         def send_to_race_b(e):
