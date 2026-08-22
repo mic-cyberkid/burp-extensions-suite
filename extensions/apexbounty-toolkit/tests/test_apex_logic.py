@@ -5,12 +5,72 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '../src'))
 
 from ApexToolkitLogic import (
+    ScopeEngine,
     LogicBreakerEngine,
     LLMFuzzerEngine,
     RaceOrchestratorEngine,
     PrivilegeMatrixEngine,
     CorrelationEngine
 )
+
+
+class MockCallbacks(object):
+    def __init__(self, in_scope_hosts):
+        self.in_scope_hosts = set(in_scope_hosts)
+
+    def isInScope(self, target):
+        target_str = str(target)
+        for host in self.in_scope_hosts:
+            if host in target_str:
+                return True
+        return False
+
+
+class MockHttpService(object):
+    def __init__(self, host, protocol='https', port=443):
+        self._host = host
+        self._protocol = protocol
+        self._port = port
+
+    def getHost(self):
+        return self._host
+
+    def getProtocol(self):
+        return self._protocol
+
+    def getPort(self):
+        return self._port
+
+
+class TestScopeEngine(unittest.TestCase):
+    def test_callbacks_none(self):
+        self.assertTrue(ScopeEngine.is_in_scope(None, "https://example.com"))
+
+    def test_empty_target(self):
+        callbacks = MockCallbacks(["example.com"])
+        self.assertTrue(ScopeEngine.is_in_scope(callbacks, None))
+        self.assertTrue(ScopeEngine.is_in_scope(callbacks, ""))
+
+    def test_string_target_in_and_out_of_scope(self):
+        callbacks = MockCallbacks(["example.com"])
+        self.assertTrue(ScopeEngine.is_in_scope(callbacks, "https://example.com/api"))
+        self.assertTrue(ScopeEngine.is_in_scope(callbacks, "example.com"))
+        self.assertFalse(ScopeEngine.is_in_scope(callbacks, "https://out-of-scope.com/api"))
+
+    def test_http_service_target(self):
+        callbacks = MockCallbacks(["target.com"])
+        svc_in = MockHttpService("target.com")
+        svc_out = MockHttpService("other.com")
+
+        self.assertTrue(ScopeEngine.is_in_scope(callbacks, svc_in))
+        self.assertFalse(ScopeEngine.is_in_scope(callbacks, svc_out))
+
+    def test_callbacks_exception_fallback(self):
+        class FaultyCallbacks(object):
+            def isInScope(self, url):
+                raise RuntimeError("Scope check internal failure")
+
+        self.assertTrue(ScopeEngine.is_in_scope(FaultyCallbacks(), "https://example.com"))
 
 class TestLogicBreakerEngine(unittest.TestCase):
     def test_permutations_generation(self):

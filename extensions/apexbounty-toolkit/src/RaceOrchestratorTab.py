@@ -10,12 +10,12 @@ import time
 from java.awt import BorderLayout, FlowLayout, Color
 from java.util.concurrent import CountDownLatch
 from javax.swing import (
-    JPanel, JButton, JLabel, JTextField, JTable, JScrollPane, JSplitPane,
+    JPanel, JButton, JLabel, JCheckBox, JTextField, JTable, JScrollPane, JSplitPane,
     JSeparator, SwingUtilities, JOptionPane
 )
 from javax.swing.table import DefaultTableModel, DefaultTableCellRenderer
 
-from ApexToolkitLogic import RaceOrchestratorEngine
+from ApexToolkitLogic import RaceOrchestratorEngine, ScopeEngine
 
 class AnomalyCellRenderer(DefaultTableCellRenderer):
     """
@@ -75,6 +75,9 @@ class RaceOrchestratorTab(object):
         control_panel.add(JLabel("Delay (ms):"))
         self.txt_delay = JTextField("0", 5)
         control_panel.add(self.txt_delay)
+
+        self.chk_scope_only = JCheckBox("In-Scope Only", True)
+        control_panel.add(self.chk_scope_only)
 
         self.btn_run_race = JButton("Run Race Attack", actionPerformed=self._on_run_race)
         control_panel.add(self.btn_run_race)
@@ -158,6 +161,28 @@ class RaceOrchestratorTab(object):
         if threads_per_endpoint <= 0 or threads_per_endpoint > 100:
             JOptionPane.showMessageDialog(self.panel, "Threads per endpoint must be between 1 and 100.")
             return
+
+        # Scope check on Target A and Target B before starting race
+        if self.chk_scope_only.isSelected():
+            if not ScopeEngine.is_in_scope(self.callbacks, self.service_a):
+                host_a = self.service_a.getHost() if hasattr(self.service_a, 'getHost') else str(self.service_a)
+                JOptionPane.showMessageDialog(
+                    self.panel,
+                    "Target Request A (" + host_a + ") is out of target scope. Attack blocked.",
+                    "Out of Scope Target",
+                    JOptionPane.ERROR_MESSAGE
+                )
+                return
+
+            if not ScopeEngine.is_in_scope(self.callbacks, self.service_b):
+                host_b = self.service_b.getHost() if hasattr(self.service_b, 'getHost') else str(self.service_b)
+                JOptionPane.showMessageDialog(
+                    self.panel,
+                    "Target Request B (" + host_b + ") is out of target scope. Attack blocked.",
+                    "Out of Scope Target",
+                    JOptionPane.ERROR_MESSAGE
+                )
+                return
 
         self.btn_run_race.setEnabled(False)
         self.lbl_summary.setText("Race Summary: Gathering baseline...")
