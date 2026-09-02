@@ -2,17 +2,21 @@
 """
 LogicBreakerTab.py - Tab 1: State-Aware Logic Breaker
 Implements flow capture session controls, sequence builder, pruning/restoration,
-and baseline permutation attack execution.
+renderable per-target Markdown notes, and baseline permutation attack execution.
 """
 
 import threading
-from java.awt import BorderLayout, FlowLayout
+from java.awt import BorderLayout, FlowLayout, Dimension
 from javax.swing import (
     JPanel, JButton, JLabel, JTable, JScrollPane, JSplitPane,
-    JSeparator, SwingUtilities, JOptionPane, JCheckBox
+    JSeparator, SwingUtilities, JOptionPane, JCheckBox, JTabbedPane,
+    JTextArea, JEditorPane, JTextField, JComboBox
 )
 from javax.swing.table import DefaultTableModel
-from ApexToolkitLogic import LogicBreakerEngine, FlowCaptureManager, NoiseScorer
+from ApexToolkitLogic import (
+    LogicBreakerEngine, FlowCaptureManager, NoiseScorer,
+    TargetNotesManager, MarkdownRenderer
+)
 
 
 class LogicBreakerTab(object):
@@ -20,6 +24,8 @@ class LogicBreakerTab(object):
         self.callbacks = callbacks
         self.helpers = helpers
         self.capture_manager = FlowCaptureManager()
+        self.notes_manager = TargetNotesManager()
+        self.current_domain = "global"
         self.is_attacking = False
         self.hide_noise = False
 
@@ -75,9 +81,10 @@ class LogicBreakerTab(object):
         seq_panel.add(seq_label, BorderLayout.NORTH)
         seq_panel.add(seq_scroll, BorderLayout.CENTER)
 
-        # Summary & Results Panel
+        # Bottom Split: Attack Results vs Renderable Markdown Target Notes
         self.lbl_summary = JLabel("  Flow Summary: No active session")
 
+        # Results Table Panel
         self.results_table_model = DefaultTableModel(["Permutation", "Description", "Steps Executed", "Final Status", "Final Length"], 0)
         self.results_table = JTable(self.results_table_model)
         res_scroll = JScrollPane(self.results_table)
@@ -86,11 +93,47 @@ class LogicBreakerTab(object):
         res_panel.add(self.lbl_summary, BorderLayout.NORTH)
         res_panel.add(res_scroll, BorderLayout.CENTER)
 
-        split_pane = JSplitPane(JSplitPane.VERTICAL_SPLIT, seq_panel, res_panel)
-        split_pane.setResizeWeight(0.45)
+        # Target Markdown Notes Panel
+        notes_container = JPanel(BorderLayout())
+        notes_top = JPanel(FlowLayout(FlowLayout.LEFT, 5, 2))
+
+        lbl_notes_domain = JLabel("Target Domain:")
+        self.txt_domain = JTextField("global", 15)
+        btn_load_notes = JButton("Load / Switch Target", actionPerformed=self._on_switch_target_domain)
+        btn_save_notes = JButton("Save Notes", actionPerformed=self._on_save_notes)
+
+        notes_top.add(lbl_notes_domain)
+        notes_top.add(self.txt_domain)
+        notes_top.add(btn_load_notes)
+        notes_top.add(btn_save_notes)
+
+        self.notes_editor = JTextArea(10, 30)
+        editor_scroll = JScrollPane(self.notes_editor)
+
+        self.notes_viewer = JEditorPane()
+        self.notes_viewer.setContentType("text/html")
+        self.notes_viewer.setEditable(False)
+        viewer_scroll = JScrollPane(self.notes_viewer)
+
+        notes_tabs = JTabbedPane()
+        notes_tabs.addTab("Markdown Editor", editor_scroll)
+        notes_tabs.addTab("Rendered View", viewer_scroll)
+
+        notes_container.add(notes_top, BorderLayout.NORTH)
+        notes_container.add(notes_tabs, BorderLayout.CENTER)
+
+        # Split results and notes side-by-side or stacked
+        bottom_split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, res_panel, notes_container)
+        bottom_split.setResizeWeight(0.60)
+
+        main_split = JSplitPane(JSplitPane.VERTICAL_SPLIT, seq_panel, bottom_split)
+        main_split.setResizeWeight(0.40)
 
         self.panel.add(control_panel, BorderLayout.NORTH)
-        self.panel.add(split_pane, BorderLayout.CENTER)
+        self.panel.add(main_split, BorderLayout.CENTER)
+
+        # Load initial global notes
+        self._load_target_notes("global")
 
     def get_component(self):
         return self.panel
@@ -100,6 +143,9 @@ class LogicBreakerTab(object):
         Called when user selects "Start Flow Capture from this request" context menu action.
         """
         host = http_service.getHost()
+        self.txt_domain.setText(host)
+        self._load_target_notes(host)
+
         self.capture_manager.start_capture(
             anchor_request={'service': http_service, 'raw': request_bytes},
             name="Flow Session (" + str(host) + ")",
@@ -173,6 +219,8 @@ class LogicBreakerTab(object):
             self.btn_start_capture.setEnabled(False)
             self.btn_pause_capture.setEnabled(True)
             self.btn_stop_capture.setEnabled(True)
+            self.txt_domain.setText(host)
+            self._load_target_notes(host)
         elif self.capture_manager.active_session.status in ('PAUSED', 'BASELINE_READY'):
             self.capture_manager.active_session.status = 'CAPTURING'
             self.btn_start_capture.setEnabled(False)
@@ -249,6 +297,33 @@ class LogicBreakerTab(object):
     def _on_toggle_hide_noise(self, event):
         self.hide_noise = self.chk_hide_noise.isSelected()
         self._refresh_ui()
+
+    def _on_switch_target_domain(self, event):
+        new_domain = self.txt_domain.getText().strip()
+        if new_domain:
+            self._save_current_notes(self.current_domain)
+            self._load_target_notes(new_domain)
+
+    def _on_save_notes(self, event):
+        self._save_current_notes(self.current_domain)
+
+    def _save_current_notes(self, domain=None):
+        target_domain = domain or self.current_domain or self.txt_domain.getText().strip() or "global"
+        raw_md = self.notes_editor.getText()
+        self.notes_manager.save_notes(target_domain, raw_md)
+        rendered_html = self.notes_manager.get_rendered_notes(target_domain)
+        self.notes_viewer.setText(rendered_html)
+
+    def _load_target_notes(self, domain):
+        self.current_domain = domain
+        raw_md = self.notes_manager.get_notes(domain)
+        if not raw_md:
+            raw_md = "# Target Notes: " + str(domain) + "\n\n- Scope:\n- Discovered Parameters:\n- Logic Flaw Hypotheses:"
+            self.notes_manager.save_notes(domain, raw_md)
+
+        self.notes_editor.setText(raw_md)
+        rendered_html = self.notes_manager.get_rendered_notes(domain)
+        self.notes_viewer.setText(rendered_html)
 
     def _refresh_ui(self):
         session = self.capture_manager.active_session

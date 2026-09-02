@@ -13,8 +13,33 @@ from ApexToolkitLogic import (
     FlowStep,
     FlowSession,
     FlowCorrelator,
-    FlowCaptureManager
+    FlowCaptureManager,
+    MarkdownRenderer,
+    TargetNotesManager
 )
+
+
+class TestMarkdownRendererAndNotesManager(unittest.TestCase):
+    def test_markdown_rendering(self):
+        raw_md = "# Header 1\n\n- Item A\n- Item B\n\n```\ncode_block()\n```"
+        html = MarkdownRenderer.render_to_html(raw_md)
+        self.assertIn("<h1", html)
+        self.assertIn("Header 1</h1>", html)
+        self.assertIn("<li>Item A</li>", html)
+        self.assertIn("<code>", html)
+
+    def test_target_notes_manager_per_domain(self):
+        mgr = TargetNotesManager()
+        mgr.save_notes("example.com", "# Notes for Example")
+        mgr.save_notes("api.target.org", "# Notes for API Target")
+
+        self.assertEqual(mgr.get_notes("example.com"), "# Notes for Example")
+        self.assertEqual(mgr.get_notes("api.target.org"), "# Notes for API Target")
+        self.assertIn("example.com", mgr.list_domains())
+        self.assertIn("api.target.org", mgr.list_domains())
+
+        rendered = mgr.get_rendered_notes("example.com")
+        self.assertIn("Notes for Example", rendered)
 
 
 class TestNoiseScorer(unittest.TestCase):

@@ -10,6 +10,175 @@ import time
 import uuid
 
 
+class MarkdownRenderer(object):
+    """
+    Pure Python Markdown-to-HTML converter designed for Java Swing JEditorPane rendering.
+    Supports headings, bold/italic, bullet/numbered lists, code blocks, blockquotes, and paragraphs.
+    """
+
+    @staticmethod
+    def render_to_html(markdown_text):
+        if not markdown_text:
+            return "<html><body style='font-family:sans-serif; color:#333333;'><i>No notes available for this target.</i></body></html>"
+
+        lines = markdown_text.splitlines()
+        html_lines = ["<html><body style='font-family:sans-serif; font-size:12pt; color:#222222; margin:10px;'>"]
+
+        in_code_block = False
+        in_ul = False
+        in_ol = False
+
+        for line in lines:
+            line_str = line.rstrip()
+
+            # Code Block Toggle
+            if line_str.startswith("```"):
+                if in_code_block:
+                    html_lines.append("</pre></code>")
+                    in_code_block = False
+                else:
+                    if in_ul:
+                        html_lines.append("</ul>")
+                        in_ul = False
+                    if in_ol:
+                        html_lines.append("</ol>")
+                        in_ol = False
+                    html_lines.append("<pre style='background-color:#f4f4f4; border:1px solid #cccccc; padding:8px;'><code>")
+                    in_code_block = True
+                continue
+
+            if in_code_block:
+                escaped = line_str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html_lines.append(escaped)
+                continue
+
+            # Close lists if blank line encountered
+            if not line_str.strip():
+                if in_ul:
+                    html_lines.append("</ul>")
+                    in_ul = False
+                if in_ol:
+                    html_lines.append("</ol>")
+                    in_ol = False
+                html_lines.append("<br/>")
+                continue
+
+            # Escape raw HTML tags for standard text lines to prevent hidden text (e.g. <user_id>)
+            formatted = line_str.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            # Inline formatting helper (Bold, Italic, Code)
+            formatted = re.sub(r'\*\*\*(.*?)\*\*\*', r'<b><i>\1</i></b>', formatted)
+            formatted = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', formatted)
+            formatted = re.sub(r'\*(.*?)\*', r'<i>\1</i>', formatted)
+            formatted = re.sub(r'`(.*?)`', r'<code style="background-color:#f0f0f0;">\1</code>', formatted)
+
+            # Headings
+            if line_str.startswith("# "):
+                if in_ul:
+                    html_lines.append("</ul>"); in_ul = False
+                if in_ol:
+                    html_lines.append("</ol>"); in_ol = False
+                html_lines.append("<h1 style='color:#114477; border-bottom:1px solid #dddddd;'>" + formatted[2:] + "</h1>")
+                continue
+            elif line_str.startswith("## "):
+                if in_ul:
+                    html_lines.append("</ul>"); in_ul = False
+                if in_ol:
+                    html_lines.append("</ol>"); in_ol = False
+                html_lines.append("<h2 style='color:#225588;'>" + formatted[3:] + "</h2>")
+                continue
+            elif line_str.startswith("### "):
+                if in_ul:
+                    html_lines.append("</ul>"); in_ul = False
+                if in_ol:
+                    html_lines.append("</ol>"); in_ol = False
+                html_lines.append("<h3 style='color:#336699;'>" + formatted[4:] + "</h3>")
+                continue
+
+            # Bullet List
+            bullet_match = re.match(r'^\s*[\-\*]\s+(.*)', line_str)
+            if bullet_match:
+                if not in_ul:
+                    if in_ol:
+                        html_lines.append("</ol>"); in_ol = False
+                    html_lines.append("<ul>")
+                    in_ul = True
+                content = formatted.lstrip().lstrip("-*").strip()
+                html_lines.append("<li>" + content + "</li>")
+                continue
+
+            # Numbered List
+            num_match = re.match(r'^\s*\d+[\.\)]\s+(.*)', line_str)
+            if num_match:
+                if not in_ol:
+                    if in_ul:
+                        html_lines.append("</ul>"); in_ul = False
+                    html_lines.append("<ol>")
+                    in_ol = True
+                content = re.sub(r'^\s*\d+[\.\)]\s*', '', formatted)
+                html_lines.append("<li>" + content + "</li>")
+                continue
+
+            # Blockquote
+            if line_str.startswith("> "):
+                if in_ul:
+                    html_lines.append("</ul>"); in_ul = False
+                if in_ol:
+                    html_lines.append("</ol>"); in_ol = False
+                html_lines.append("<blockquote style='background:#f9f9f9; border-left:4px solid #cccccc; margin:4px; padding:4px 8px;'>" + formatted[2:] + "</blockquote>")
+                continue
+
+            # Default Paragraph
+            if in_ul:
+                html_lines.append("</ul>"); in_ul = False
+            if in_ol:
+                html_lines.append("</ol>"); in_ol = False
+
+            html_lines.append("<p style='margin:4px 0;'>" + formatted + "</p>")
+
+        if in_ul:
+            html_lines.append("</ul>")
+        if in_ol:
+            html_lines.append("</ol>")
+        if in_code_block:
+            html_lines.append("</pre></code>")
+
+        html_lines.append("</body></html>")
+        return "\n".join(html_lines)
+
+
+class TargetNotesManager(object):
+    """
+    Manages per-target domain Markdown notes and metadata persistence.
+    """
+
+    def __init__(self):
+        self.notes_db = {}  # domain -> {'markdown': str, 'updated_at': float}
+
+    def save_notes(self, domain, markdown_text):
+        domain_clean = (domain or "global").lower().strip()
+        self.notes_db[domain_clean] = {
+            'markdown': markdown_text or "",
+            'updated_at': time.time()
+        }
+        return domain_clean
+
+    def get_notes(self, domain):
+        domain_clean = (domain or "global").lower().strip()
+        if domain_clean in self.notes_db:
+            return self.notes_db[domain_clean]['markdown']
+        return ""
+
+    def get_rendered_notes(self, domain):
+        raw_md = self.get_notes(domain)
+        if not raw_md:
+            raw_md = "# Target Notes: " + str(domain) + "\n\n*No notes recorded yet for this domain.*"
+        return MarkdownRenderer.render_to_html(raw_md)
+
+    def list_domains(self):
+        return sorted(list(self.notes_db.keys()))
+
+
 class NoiseScorer(object):
     """
     Multi-signal noise classifier that assigns numeric noise scores (0.0 to 1.0)
