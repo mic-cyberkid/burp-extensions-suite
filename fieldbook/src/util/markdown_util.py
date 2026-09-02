@@ -4,12 +4,19 @@ Includes #req:N deep linking token parsing.
 """
 
 import re
-import html
 
-def escape_html(text):
-    if not text:
-        return ""
-    return html.escape(text)
+try:
+    import html
+    def escape_html(text):
+        if not text:
+            return ""
+        return html.escape(text)
+except ImportError:
+    import cgi
+    def escape_html(text):
+        if not text:
+            return ""
+        return cgi.escape(text, quote=True)
 
 def markdown_to_html(md_text, linked_requests=None):
     """

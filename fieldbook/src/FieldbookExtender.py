@@ -6,13 +6,16 @@ import sys
 import os
 import logging
 
-# Ensure src path is in sys.path for Jython module loading inside Burp
-src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Fieldbook.Extender")
+
+# Try to resolve path at top-level if __file__ exists (e.g. CLI tests)
+try:
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+except NameError:
+    pass
 
 try:
     from burp import IBurpExtender, ITab, IContextMenuFactory, IExtensionStateListener
@@ -24,11 +27,6 @@ except ImportError:
     class IContextMenuFactory(object): pass
     class IExtensionStateListener(object): pass
 
-from fieldbook.src.model.notebook import NotebookStore
-from fieldbook.src.ui.main_tab import FieldbookMainTab, GUI_AVAILABLE
-from fieldbook.src.integration.context_menu import FieldbookContextMenuFactory
-from fieldbook.src.integration.hotkey_manager import FieldbookHotkeyDispatcher
-
 class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IExtensionStateListener):
     """
     Main Burp Extender implementation for Fieldbook.
@@ -38,6 +36,24 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IExtensionStateList
         self.helpers = callbacks.getHelpers()
 
         callbacks.setExtensionName("Fieldbook Research Notebook")
+
+        # Resolve paths dynamically using callbacks.getExtensionFilename()
+        ext_filename = callbacks.getExtensionFilename()
+        if ext_filename:
+            ext_dir = os.path.dirname(os.path.abspath(ext_filename)) # .../fieldbook/src
+            fieldbook_root = os.path.dirname(ext_dir)                 # .../fieldbook
+            repo_root = os.path.dirname(fieldbook_root)               # repo root
+            for p in (repo_root, fieldbook_root, ext_dir):
+                if p and p not in sys.path:
+                    sys.path.insert(0, p)
+
+        # Import Fieldbook modules after sys.path is updated
+        from fieldbook.src.model.notebook import NotebookStore
+        from fieldbook.src.ui.main_tab import FieldbookMainTab, GUI_AVAILABLE
+        from fieldbook.src.integration.context_menu import FieldbookContextMenuFactory
+        from fieldbook.src.integration.hotkey_manager import FieldbookHotkeyDispatcher
+
+        self.GUI_AVAILABLE = GUI_AVAILABLE
 
         # Load notebook file path setting
         saved_path = callbacks.loadExtensionSetting("fieldbook_notebook_path")
@@ -94,7 +110,7 @@ class BurpExtender(IBurpExtender, ITab, IContextMenuFactory, IExtensionStateList
         return "Fieldbook"
 
     def getUiComponent(self):
-        return self.main_tab
+        return getattr(self, "main_tab", None)
 
     # IContextMenuFactory Implementation
     def createMenuItems(self, invocation):

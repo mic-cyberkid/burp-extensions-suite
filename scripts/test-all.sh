@@ -26,5 +26,6 @@ PYTHONPATH=. python3 fieldbook/tests/test_notebook_model.py
 PYTHONPATH=. python3 fieldbook/tests/test_markdown_and_export.py
 PYTHONPATH=. python3 fieldbook/tests/test_context_menu.py
 PYTHONPATH=. python3 fieldbook/tests/test_search_performance.py
+PYTHONPATH=. python3 fieldbook/tests/test_extender_load.py
 
 echo "All tests passed successfully!"

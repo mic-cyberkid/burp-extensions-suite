@@ -195,8 +195,11 @@ class NotebookStore(object):
 
             tmp_path = self.filepath + ".tmp." + str(uuid.uuid4())[:8]
             try:
-                with open(tmp_path, "w") as f:
-                    f.write(content)
+                with open(tmp_path, "wb") as f:
+                    if hasattr(content, "encode"):
+                        f.write(content.encode("utf-8"))
+                    else:
+                        f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
 
