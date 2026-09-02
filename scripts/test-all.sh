@@ -21,4 +21,10 @@ python3 extensions/api-miner/tests/test_api_miner_logic.py
 python3 extensions/subdomain-hunter/tests/test_takeover_logic.py
 python3 extensions/jwt-idor-tester/tests/test_jwt_idor_logic.py
 
+echo "Running Fieldbook tests..."
+PYTHONPATH=. python3 fieldbook/tests/test_notebook_model.py
+PYTHONPATH=. python3 fieldbook/tests/test_markdown_and_export.py
+PYTHONPATH=. python3 fieldbook/tests/test_context_menu.py
+PYTHONPATH=. python3 fieldbook/tests/test_search_performance.py
+
 echo "All tests passed successfully!"

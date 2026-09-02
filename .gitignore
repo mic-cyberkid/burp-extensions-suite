@@ -32,3 +32,6 @@ Thumbs.db
 # Burp
 *.log
 burp.db
+
+# Fieldbook local data
+.fieldbook/
