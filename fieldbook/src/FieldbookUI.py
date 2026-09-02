@@ -42,6 +42,7 @@ try:
         WindowAdapter, WindowEvent
     )
     from javax.swing.event import DocumentListener, HyperlinkListener, HyperlinkEvent
+    from java.io import File
     HAS_GUI = True
 except ImportError:
     HAS_GUI = False
@@ -343,8 +344,9 @@ if HAS_GUI:
                 linked_requests=self.linked_requests
             )
 
-            # Non-blocking save to store
-            self.store.add_entry(entry, immediate=True)
+            # Non-blocking async save to store off EDT
+            self.store.add_entry(entry, immediate=False)
+            self.store.save_async()
 
             if self.on_save_callback:
                 try:
@@ -465,7 +467,23 @@ if HAS_GUI:
             self.current_entry = None
 
             self._init_ui()
+            self._wire_key_bindings()
             self.refresh_entries_list()
+
+        def _wire_key_bindings(self):
+            # Wire up Ctrl+N key shortcut for new note
+            input_map = self.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+            action_map = self.getActionMap()
+
+            ctrl_n = KeyStroke.getKeyStroke(KeyEvent.VK_N, Toolkit.getDefaultToolkit().getMenuShortcutKeyMask())
+
+            tab_ref = self
+            class NewNoteAction(AbstractAction):
+                def actionPerformed(self, e):
+                    tab_ref.create_new_note()
+
+            input_map.put(ctrl_n, "newNote")
+            action_map.put("newNote", NewNoteAction())
 
         def _init_ui(self):
             split_pane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT)
@@ -680,12 +698,6 @@ if HAS_GUI:
             self.preview_pane.addHyperlinkListener(PreviewHyperlinkListener(self))
             self.tabbed_editor.addTab("Preview (HTML)", JScrollPane(self.preview_pane))
 
-            class EditorTabChangeListener(ActionListener):
-                def __init__(self, tab):
-                    self.tab = tab
-                def actionPerformed(self, e):
-                    pass
-
             # Update preview on tab select
             def on_tab_change(e):
                 if self.tabbed_editor.getSelectedIndex() == 1:
@@ -878,7 +890,8 @@ if HAS_GUI:
                 content=content,
                 entry_type=entry_type,
                 target=target,
-                tags=tags
+                tags=tags,
+                immediate=False
             )
             if updated:
                 self.current_entry = updated
@@ -920,7 +933,8 @@ if HAS_GUI:
                 JOptionPane.YES_NO_OPTION
             )
             if res == JOptionPane.YES_OPTION:
-                self.store.delete_entry(self.current_entry.id, immediate=True)
+                self.store.delete_entry(self.current_entry.id, immediate=False)
+                self.store.save_async()
                 self.current_entry = None
                 self.edit_text_area.setText("")
                 self.detail_target_field.setText("")
@@ -934,7 +948,8 @@ if HAS_GUI:
                 return
             reqs = list(self.current_entry.linked_requests)
             del reqs[req_idx]
-            self.store.update_entry(self.current_entry.id, linked_requests=reqs, immediate=True)
+            self.store.update_entry(self.current_entry.id, linked_requests=reqs, immediate=False)
+            self.store.save_async()
             self.render_linked_request_chips(self.current_entry)
 
         def open_linked_request_dialog(self, req_data):
@@ -977,16 +992,22 @@ if HAS_GUI:
 
         def _save_export_to_file(self, default_name, content):
             chooser = JFileChooser()
-            chooser.setSelectedFile(java_file(default_name) if 'java_file' in globals() else os.path.join(os.path.expanduser("~"), default_name))
+            default_path = os.path.join(os.path.expanduser("~"), default_name)
+            if 'File' in globals():
+                chooser.setSelectedFile(File(default_path))
             ret = chooser.showSaveDialog(self)
             if ret == JFileChooser.APPROVE_OPTION:
                 selected_path = str(chooser.getSelectedFile().getAbsolutePath())
-                try:
-                    with open(selected_path, "w") as f:
-                        f.write(content)
-                    JOptionPane.showMessageDialog(self, "Export saved successfully to:\n" + selected_path)
-                except Exception as e:
-                    JOptionPane.showMessageDialog(self, "Failed to export: " + str(e))
+                def write_file_async():
+                    try:
+                        with open(selected_path, "w") as f:
+                            f.write(content)
+                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Export saved successfully to:\n" + selected_path))
+                    except Exception as e:
+                        SwingUtilities.invokeLater(lambda: JOptionPane.showMessageDialog(self, "Failed to export: " + str(e)))
+                t = threading.Thread(target=write_file_async)
+                t.daemon = True
+                t.start()
 
         def show_path_dialog(self):
             current_path = self.store.filepath
@@ -997,5 +1018,5 @@ if HAS_GUI:
             )
             if new_path and new_path.strip():
                 self.store.set_filepath(new_path.strip())
-                self.store.save_immediate()
+                self.store.save_async()
                 JOptionPane.showMessageDialog(self, "Notebook path updated to:\n" + new_path.strip())

@@ -181,6 +181,14 @@ class FieldbookStore(object):
                     os.remove(self.filepath)
                 os.rename(tmp_path, self.filepath)
 
+    def save_async(self):
+        """
+        Triggers an immediate atomic save on a background thread off the Swing EDT.
+        """
+        t = threading.Thread(target=self.save_immediate)
+        t.daemon = True
+        t.start()
+
     def schedule_save(self):
         """
         Schedules a debounced auto-save.
